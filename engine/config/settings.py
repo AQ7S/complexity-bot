@@ -12,7 +12,30 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-load_dotenv(REPO_ROOT / ".env", override=False)
+
+
+def _user_data_env() -> Path:
+    appdata = os.environ.get("APPDATA") or os.environ.get("LOCALAPPDATA")
+    base = Path(appdata) if appdata else Path.home()
+    return base / "Complexity Engine" / ".env"
+
+
+def _exe_sibling_env() -> Path:
+    import sys
+    base = Path(sys.executable).parent if getattr(sys, "frozen", False) else REPO_ROOT
+    return base / ".env"
+
+
+USER_ENV_PATH = _user_data_env()
+for candidate in (USER_ENV_PATH, _exe_sibling_env(), REPO_ROOT / ".env"):
+    if candidate.is_file():
+        load_dotenv(candidate, override=False)
+
+if not USER_ENV_PATH.is_file():
+    dev_env = REPO_ROOT / ".env"
+    if dev_env.is_file():
+        USER_ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+        USER_ENV_PATH.write_bytes(dev_env.read_bytes())
 
 # --- MT5 ---------------------------------------------------------------------
 MT5_LOGIN: int | None = int(os.environ["MT5_LOGIN"]) if os.environ.get("MT5_LOGIN") else None
@@ -23,17 +46,21 @@ MT5_TIMEOUT_MS: int = int(os.environ.get("MT5_TIMEOUT_MS", "60000"))
 MT5_PORTABLE: bool = os.environ.get("MT5_PORTABLE", "false").lower() == "true"
 
 # --- Storage -----------------------------------------------------------------
+_USER_DATA_DIR = USER_ENV_PATH.parent
 DUCKDB_PATH: str = os.environ.get(
-    "DUCKDB_PATH", str(REPO_ROOT / "engine" / "data" / "store" / "market.duckdb")
+    "DUCKDB_PATH", str(_USER_DATA_DIR / "store" / "market.duckdb")
 )
 SQLITE_PATH: str = os.environ.get(
-    "SQLITE_PATH", str(REPO_ROOT / "engine" / "data" / "store" / "journal.sqlite")
+    "SQLITE_PATH", str(_USER_DATA_DIR / "store" / "journal.sqlite")
 )
 DATA_RING_BUFFER_TICKS: int = int(os.environ.get("DATA_RING_BUFFER_TICKS", "500000"))
+Path(DUCKDB_PATH).parent.mkdir(parents=True, exist_ok=True)
+Path(SQLITE_PATH).parent.mkdir(parents=True, exist_ok=True)
 
 # --- Logging -----------------------------------------------------------------
 LOG_LEVEL: str = os.environ.get("LOG_LEVEL", "INFO")
-LOG_DIR: str = os.environ.get("LOG_DIR", str(REPO_ROOT / "engine" / "logs"))
+LOG_DIR: str = os.environ.get("LOG_DIR", str(_USER_DATA_DIR / "logs"))
+Path(LOG_DIR).mkdir(parents=True, exist_ok=True)
 
 # --- Hardcoded risk constants (§4) ------------------------------------------
 RISK_PCT_PER_TRADE = 0.02
