@@ -1,0 +1,16 @@
+{
+  "name": "complexity-engine",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Complexity Engine — local AI trading system (XM MT5 demo).",
+  "pnpm": {
+    "onlyBuiltDependencies": ["electron", "esbuild"]
+  },
+  "scripts": {
+    "ui:dev": "pnpm --filter complexity-engine-ui dev",
+    "ui:build": "pnpm --filter complexity-engine-ui build",
+    "ui:test": "pnpm --filter complexity-engine-ui test",
+    "engine:run": "engine/.venv/Scripts/python engine/engine.py",
+    "engine:test": "engine/.venv/Scripts/python -m pytest engine/tests"
+  }
+}

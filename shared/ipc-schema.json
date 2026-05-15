@@ -1,0 +1,971 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://complexity.engine/ipc-schema.json",
+  "title": "Complexity Engine IPC Messages",
+  "envelope": {
+    "type": "object",
+    "required": [
+      "type",
+      "ts",
+      "data"
+    ],
+    "properties": {
+      "type": {
+        "type": "string"
+      },
+      "ts": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "data": {
+        "type": "object"
+      }
+    }
+  },
+  "payloads": {
+    "engine_status": {
+      "properties": {
+        "status": {
+          "enum": [
+            "LIVE",
+            "PAUSED",
+            "TRAINING",
+            "ERROR",
+            "STARTING"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "uptime_s": {
+          "default": 0,
+          "title": "Uptime S",
+          "type": "integer"
+        },
+        "mt5_connected": {
+          "default": false,
+          "title": "Mt5 Connected",
+          "type": "boolean"
+        },
+        "version": {
+          "default": "1.0.0",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "title": "EngineStatus",
+      "type": "object"
+    },
+    "tick_update": {
+      "properties": {
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "bid": {
+          "title": "Bid",
+          "type": "number"
+        },
+        "ask": {
+          "title": "Ask",
+          "type": "number"
+        },
+        "spread": {
+          "title": "Spread",
+          "type": "number"
+        },
+        "volume": {
+          "default": 0.0,
+          "title": "Volume",
+          "type": "number"
+        }
+      },
+      "required": [
+        "symbol",
+        "bid",
+        "ask",
+        "spread"
+      ],
+      "title": "TickUpdate",
+      "type": "object"
+    },
+    "bar_update": {
+      "properties": {
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "timeframe": {
+          "enum": [
+            "M1",
+            "M5",
+            "M15",
+            "H1",
+            "H4",
+            "D1"
+          ],
+          "title": "Timeframe",
+          "type": "string"
+        },
+        "o": {
+          "title": "O",
+          "type": "number"
+        },
+        "h": {
+          "title": "H",
+          "type": "number"
+        },
+        "l": {
+          "title": "L",
+          "type": "number"
+        },
+        "c": {
+          "title": "C",
+          "type": "number"
+        },
+        "v": {
+          "title": "V",
+          "type": "number"
+        },
+        "ts_bar": {
+          "title": "Ts Bar",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "symbol",
+        "timeframe",
+        "o",
+        "h",
+        "l",
+        "c",
+        "v",
+        "ts_bar"
+      ],
+      "title": "BarUpdate",
+      "type": "object"
+    },
+    "signal_detected": {
+      "$defs": {
+        "ClaudeBlock": {
+          "properties": {
+            "decision": {
+              "enum": [
+                "BUY",
+                "SELL",
+                "SKIP"
+              ],
+              "title": "Decision",
+              "type": "string"
+            },
+            "confidence": {
+              "maximum": 100,
+              "minimum": 0,
+              "title": "Confidence",
+              "type": "integer"
+            },
+            "reasoning": {
+              "maxLength": 600,
+              "title": "Reasoning",
+              "type": "string"
+            },
+            "risk_adjustment": {
+              "maximum": 1.5,
+              "minimum": 0.5,
+              "title": "Risk Adjustment",
+              "type": "number"
+            }
+          },
+          "required": [
+            "decision",
+            "confidence",
+            "reasoning",
+            "risk_adjustment"
+          ],
+          "title": "ClaudeBlock",
+          "type": "object"
+        },
+        "SignalSources": {
+          "properties": {
+            "smc": {
+              "enum": [
+                "BUY",
+                "SELL",
+                "HOLD"
+              ],
+              "title": "Smc",
+              "type": "string"
+            },
+            "cnn": {
+              "enum": [
+                "BUY",
+                "SELL",
+                "HOLD"
+              ],
+              "title": "Cnn",
+              "type": "string"
+            },
+            "rl": {
+              "enum": [
+                "BUY",
+                "SELL",
+                "HOLD"
+              ],
+              "title": "Rl",
+              "type": "string"
+            },
+            "killzone": {
+              "title": "Killzone",
+              "type": "boolean"
+            },
+            "news_clear": {
+              "title": "News Clear",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "smc",
+            "cnn",
+            "rl",
+            "killzone",
+            "news_clear"
+          ],
+          "title": "SignalSources",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "signal_id": {
+          "title": "Signal Id",
+          "type": "string"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "timeframe": {
+          "title": "Timeframe",
+          "type": "string"
+        },
+        "direction": {
+          "enum": [
+            "BUY",
+            "SELL",
+            "HOLD"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "confluence": {
+          "maximum": 5,
+          "minimum": 0,
+          "title": "Confluence",
+          "type": "integer"
+        },
+        "sources": {
+          "$ref": "#/$defs/SignalSources"
+        },
+        "claude": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClaudeBlock"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "signal_id",
+        "symbol",
+        "timeframe",
+        "direction",
+        "confluence",
+        "sources"
+      ],
+      "title": "SignalDetected",
+      "type": "object"
+    },
+    "trade_opened": {
+      "properties": {
+        "ticket": {
+          "title": "Ticket",
+          "type": "integer"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "direction": {
+          "enum": [
+            "BUY",
+            "SELL"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "entry": {
+          "title": "Entry",
+          "type": "number"
+        },
+        "sl": {
+          "title": "Sl",
+          "type": "number"
+        },
+        "tp": {
+          "title": "Tp",
+          "type": "number"
+        },
+        "lot": {
+          "title": "Lot",
+          "type": "number"
+        },
+        "signal_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Signal Id"
+        }
+      },
+      "required": [
+        "ticket",
+        "symbol",
+        "direction",
+        "entry",
+        "sl",
+        "tp",
+        "lot"
+      ],
+      "title": "TradeOpened",
+      "type": "object"
+    },
+    "trade_updated": {
+      "properties": {
+        "ticket": {
+          "title": "Ticket",
+          "type": "integer"
+        },
+        "current_price": {
+          "title": "Current Price",
+          "type": "number"
+        },
+        "pnl": {
+          "title": "Pnl",
+          "type": "number"
+        },
+        "rr_current": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rr Current"
+        }
+      },
+      "required": [
+        "ticket",
+        "current_price",
+        "pnl"
+      ],
+      "title": "TradeUpdated",
+      "type": "object"
+    },
+    "trade_closed": {
+      "properties": {
+        "ticket": {
+          "title": "Ticket",
+          "type": "integer"
+        },
+        "exit": {
+          "title": "Exit",
+          "type": "number"
+        },
+        "pnl": {
+          "title": "Pnl",
+          "type": "number"
+        },
+        "rr_achieved": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rr Achieved"
+        },
+        "close_reason": {
+          "enum": [
+            "TP",
+            "SL",
+            "TRAIL",
+            "MANUAL",
+            "KILL",
+            "NEWS"
+          ],
+          "title": "Close Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ticket",
+        "exit",
+        "pnl",
+        "close_reason"
+      ],
+      "title": "TradeClosed",
+      "type": "object"
+    },
+    "account_update": {
+      "properties": {
+        "equity": {
+          "title": "Equity",
+          "type": "number"
+        },
+        "balance": {
+          "title": "Balance",
+          "type": "number"
+        },
+        "free_margin": {
+          "title": "Free Margin",
+          "type": "number"
+        },
+        "drawdown_pct": {
+          "title": "Drawdown Pct",
+          "type": "number"
+        },
+        "open_positions": {
+          "title": "Open Positions",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "equity",
+        "balance",
+        "free_margin",
+        "drawdown_pct",
+        "open_positions"
+      ],
+      "title": "AccountUpdate",
+      "type": "object"
+    },
+    "model_update": {
+      "properties": {
+        "model_name": {
+          "enum": [
+            "cnn_lstm",
+            "rl_dqn"
+          ],
+          "title": "Model Name",
+          "type": "string"
+        },
+        "version": {
+          "title": "Version",
+          "type": "string"
+        },
+        "accuracy": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Accuracy"
+        },
+        "loss": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Loss"
+        }
+      },
+      "required": [
+        "model_name",
+        "version"
+      ],
+      "title": "ModelUpdate",
+      "type": "object"
+    },
+    "correlation_update": {
+      "properties": {
+        "symbols": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Symbols",
+          "type": "array"
+        },
+        "matrix": {
+          "items": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "title": "Matrix",
+          "type": "array"
+        }
+      },
+      "required": [
+        "symbols",
+        "matrix"
+      ],
+      "title": "CorrelationUpdate",
+      "type": "object"
+    },
+    "regime_change": {
+      "properties": {
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "regime": {
+          "enum": [
+            "TRENDING_UP",
+            "TRENDING_DOWN",
+            "RANGING",
+            "HIGH_VOLATILITY"
+          ],
+          "title": "Regime",
+          "type": "string"
+        },
+        "adx": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Adx"
+        },
+        "atr_pct": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Atr Pct"
+        }
+      },
+      "required": [
+        "symbol",
+        "regime"
+      ],
+      "title": "RegimeChange",
+      "type": "object"
+    },
+    "news_warning": {
+      "properties": {
+        "event_name": {
+          "title": "Event Name",
+          "type": "string"
+        },
+        "currency": {
+          "maxLength": 3,
+          "minLength": 3,
+          "title": "Currency",
+          "type": "string"
+        },
+        "impact": {
+          "enum": [
+            "LOW",
+            "MEDIUM",
+            "HIGH"
+          ],
+          "title": "Impact",
+          "type": "string"
+        },
+        "time_until_minutes": {
+          "title": "Time Until Minutes",
+          "type": "integer"
+        },
+        "affected_symbols": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Affected Symbols",
+          "type": "array"
+        }
+      },
+      "required": [
+        "event_name",
+        "currency",
+        "impact",
+        "time_until_minutes"
+      ],
+      "title": "NewsWarning",
+      "type": "object"
+    },
+    "kill_triggered": {
+      "properties": {
+        "kind": {
+          "enum": [
+            "INTRADAY",
+            "WEEKLY",
+            "MANUAL",
+            "NEWS"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "drawdown_pct": {
+          "title": "Drawdown Pct",
+          "type": "number"
+        },
+        "positions_closed": {
+          "default": 0,
+          "title": "Positions Closed",
+          "type": "integer"
+        },
+        "halted_until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Halted Until"
+        }
+      },
+      "required": [
+        "kind",
+        "drawdown_pct"
+      ],
+      "title": "KillTriggered",
+      "type": "object"
+    },
+    "price_alert": {
+      "properties": {
+        "alert_id": {
+          "title": "Alert Id",
+          "type": "integer"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "direction": {
+          "enum": [
+            "ABOVE",
+            "BELOW"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "threshold": {
+          "title": "Threshold",
+          "type": "number"
+        },
+        "current_price": {
+          "title": "Current Price",
+          "type": "number"
+        }
+      },
+      "required": [
+        "alert_id",
+        "symbol",
+        "direction",
+        "threshold",
+        "current_price"
+      ],
+      "title": "PriceAlert",
+      "type": "object"
+    },
+    "claude_feed": {
+      "properties": {
+        "trade_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trade Id"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "decision": {
+          "enum": [
+            "BUY",
+            "SELL",
+            "SKIP"
+          ],
+          "title": "Decision",
+          "type": "string"
+        },
+        "confidence": {
+          "title": "Confidence",
+          "type": "integer"
+        },
+        "reasoning_excerpt": {
+          "maxLength": 240,
+          "title": "Reasoning Excerpt",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol",
+        "decision",
+        "confidence",
+        "reasoning_excerpt"
+      ],
+      "title": "ClaudeFeed",
+      "type": "object"
+    },
+    "notification": {
+      "properties": {
+        "event": {
+          "enum": [
+            "TRADE_OPENED",
+            "TRADE_CLOSED_PROFIT",
+            "TRADE_CLOSED_LOSS",
+            "SIGNAL_DETECTED",
+            "KILL_TRIGGERED",
+            "NEWS_WARNING",
+            "ENGINE_ERROR",
+            "TRAINING_COMPLETE"
+          ],
+          "title": "Event",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "body": {
+          "title": "Body",
+          "type": "string"
+        },
+        "sound": {
+          "title": "Sound",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event",
+        "title",
+        "body",
+        "sound"
+      ],
+      "title": "Notification",
+      "type": "object"
+    },
+    "cmd_emergency_close": {
+      "properties": {},
+      "title": "CmdEmergencyClose",
+      "type": "object"
+    },
+    "cmd_pause": {
+      "properties": {
+        "paused": {
+          "title": "Paused",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "paused"
+      ],
+      "title": "CmdPause",
+      "type": "object"
+    },
+    "cmd_manual_retrain": {
+      "properties": {
+        "model": {
+          "enum": [
+            "cnn_lstm",
+            "rl_dqn"
+          ],
+          "title": "Model",
+          "type": "string"
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "CmdManualRetrain",
+      "type": "object"
+    },
+    "cmd_settings_update": {
+      "properties": {
+        "partial": {
+          "title": "Partial",
+          "type": "object"
+        }
+      },
+      "required": [
+        "partial"
+      ],
+      "title": "CmdSettingsUpdate",
+      "type": "object"
+    },
+    "cmd_run_backtest": {
+      "properties": {
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "from": {
+          "title": "From",
+          "type": "string"
+        },
+        "to": {
+          "title": "To",
+          "type": "string"
+        },
+        "strategy_config": {
+          "title": "Strategy Config",
+          "type": "object"
+        }
+      },
+      "required": [
+        "symbol",
+        "from",
+        "to"
+      ],
+      "title": "CmdRunBacktest",
+      "type": "object"
+    },
+    "cmd_set_alert": {
+      "properties": {
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "direction": {
+          "enum": [
+            "ABOVE",
+            "BELOW"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "threshold": {
+          "title": "Threshold",
+          "type": "number"
+        }
+      },
+      "required": [
+        "symbol",
+        "direction",
+        "threshold"
+      ],
+      "title": "CmdSetAlert",
+      "type": "object"
+    },
+    "cmd_get_trades": {
+      "properties": {
+        "limit": {
+          "default": 200,
+          "title": "Limit",
+          "type": "integer"
+        }
+      },
+      "title": "CmdGetTrades",
+      "type": "object"
+    },
+    "cmd_get_settings": {
+      "properties": {},
+      "title": "CmdGetSettings",
+      "type": "object"
+    },
+    "trades_snapshot": {
+      "properties": {
+        "trades": {
+          "items": {
+            "type": "object"
+          },
+          "title": "Trades",
+          "type": "array"
+        }
+      },
+      "required": [
+        "trades"
+      ],
+      "title": "TradesSnapshot",
+      "type": "object"
+    },
+    "settings_snapshot": {
+      "properties": {
+        "values": {
+          "title": "Values",
+          "type": "object"
+        }
+      },
+      "required": [
+        "values"
+      ],
+      "title": "SettingsSnapshot",
+      "type": "object"
+    },
+    "ack": {
+      "properties": {
+        "ref_type": {
+          "title": "Ref Type",
+          "type": "string"
+        },
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        }
+      },
+      "required": [
+        "ref_type",
+        "ok"
+      ],
+      "title": "Ack",
+      "type": "object"
+    }
+  }
+}

@@ -1,0 +1,39 @@
+appId: com.complexity.engine
+productName: Complexity Engine
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**/*
+  - dist-electron/**/*
+extraResources:
+  # PyInstaller output — built by scripts/build_release.ps1 before electron-builder runs.
+  # Lands at <app>/resources/engine/* in the installed product; engine_process.ts
+  # spawns engine.exe from there.
+  - from: ../engine/dist/engine
+    to: engine
+    filter:
+      - "**/*"
+  # Bundled WAV files for renderer-side audio playback.
+  - from: ../engine/sounds
+    to: engine/sounds
+    filter:
+      - "*.wav"
+win:
+  target:
+    - nsis
+  icon: build/icon.ico
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+  artifactName: "${productName}-Setup-${version}.${ext}"
+  deleteAppDataOnUninstall: false
+asar: true
+asarUnpack:
+  - "dist-electron/**/*"
+publish:
+  - provider: github
+    owner: AQ7S
+    repo: complexity-bot
+    releaseType: release
