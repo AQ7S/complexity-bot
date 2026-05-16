@@ -8,9 +8,20 @@ const COLORS = {
   SKIP: 'text-white/60',
 } as const;
 
+function timeAgo(ms: number | null): string {
+  if (!ms) return '—';
+  const d = Date.now() - ms;
+  if (d < 60_000) return `${Math.round(d / 1000)}s ago`;
+  if (d < 3600_000) return `${Math.round(d / 60_000)}m ago`;
+  return `${Math.round(d / 3600_000)}h ago`;
+}
+
 export default function ClaudeFeed() {
   const feed = useEngineStore((s) => s.claudeFeed);
+  const stats = useEngineStore((s) => s.claudeStats);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+
+  const skipRate = stats.total > 0 ? (stats.skips / stats.total) * 100 : 0;
 
   const toggle = (i: number) => {
     setExpanded((prev) => {
@@ -30,10 +41,21 @@ export default function ClaudeFeed() {
         <h2 className="text-sm font-bold uppercase tracking-wider text-white/70">
           Claude Decisions
         </h2>
-        <span className="text-xs text-white/40">{feed.length}</span>
+        <span className="rounded bg-bg-tertiary px-2 py-0.5 font-mono text-xs text-white/70">
+          {stats.total}
+        </span>
       </header>
+      <div className="mb-3 grid grid-cols-4 gap-2 text-center">
+        <Stat label="Buys"   value={stats.buys}  tone="text-accent-green" />
+        <Stat label="Sells"  value={stats.sells} tone="text-accent-red" />
+        <Stat label="Skips"  value={stats.skips} tone="text-white/60" />
+        <Stat label="Skip %" value={`${skipRate.toFixed(0)}%`} tone="text-accent-gold" />
+      </div>
+      <p className="mb-2 text-right text-[10px] text-white/40">last {timeAgo(stats.lastTs)}</p>
       {feed.length === 0 ? (
-        <p className="py-8 text-center text-xs text-white/40">No Claude decisions yet.</p>
+        <p className="py-4 text-center text-xs text-white/40">
+          {stats.total === 0 ? 'No Claude decisions yet.' : 'Recent decisions purged.'}
+        </p>
       ) : (
         <ul className="space-y-2">
           <AnimatePresence initial={false}>
@@ -64,5 +86,14 @@ export default function ClaudeFeed() {
         </ul>
       )}
     </section>
+  );
+}
+
+function Stat({ label, value, tone }: { label: string; value: number | string; tone: string }) {
+  return (
+    <div className="rounded bg-bg-tertiary px-1 py-1">
+      <div className="text-[9px] uppercase text-white/40">{label}</div>
+      <div className={`font-mono text-sm ${tone}`}>{value}</div>
+    </div>
   );
 }

@@ -1,13 +1,16 @@
 import { NavLink } from 'react-router-dom';
-import { Activity, BarChart3, BookOpen, Brain, Settings as Cog, Radar, Workflow } from 'lucide-react';
+import { Activity, BarChart3, BookOpen, Brain, Settings as Cog, Radar, Workflow, Gauge, Grid3X3, FlaskConical } from 'lucide-react';
 
 const ROUTES = [
   { to: '/',          label: 'Command',  icon: Activity },
-  { to: '/trace',     label: 'Reasoning', icon: Workflow },
   { to: '/charts',    label: 'Charts',   icon: BarChart3 },
   { to: '/scanner',   label: 'Scanner',  icon: Radar },
+  { to: '/trace',     label: 'Reasoning',icon: Workflow },
   { to: '/journal',   label: 'Journal',  icon: BookOpen },
   { to: '/ai',        label: 'AI',       icon: Brain },
+  { to: '/spread',    label: 'Spreads',  icon: Gauge },
+  { to: '/heatmap',   label: 'Heatmap',  icon: Grid3X3 },
+  { to: '/backtest',  label: 'Backtest', icon: FlaskConical },
   { to: '/settings',  label: 'Settings', icon: Cog },
 ] as const;
 

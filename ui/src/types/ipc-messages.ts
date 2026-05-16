@@ -41,6 +41,7 @@ export type SignalDetected = {
   timeframe: string;
   direction: SignalDir;
   confluence: number;
+  ts: number;
   sources: {
     smc: SignalDir; cnn: SignalDir; rl: SignalDir;
     killzone: boolean; news_clear: boolean;

@@ -130,7 +130,7 @@ function SignalCard({ sig }: { sig: SignalDetected }) {
 
 const DEMO_SIGNALS: SignalDetected[] = [
   {
-    signal_id: 'demo-1', symbol: 'EURUSD#', timeframe: 'M5', direction: 'BUY', confluence: 4,
+    signal_id: 'demo-1', ts: Date.now(), symbol: 'EURUSD#', timeframe: 'M5', direction: 'BUY', confluence: 4,
     sources: { smc: 'BUY', cnn: 'BUY', rl: 'HOLD', killzone: true, news_clear: true },
     claude: {
       decision: 'BUY', confidence: 78, risk_adjustment: 1.1,
@@ -138,7 +138,7 @@ const DEMO_SIGNALS: SignalDetected[] = [
     }
   },
   {
-    signal_id: 'demo-2', symbol: 'GOLD#', timeframe: 'M5', direction: 'SELL', confluence: 3,
+    signal_id: 'demo-2', ts: Date.now(), symbol: 'GOLD#', timeframe: 'M5', direction: 'SELL', confluence: 3,
     sources: { smc: 'SELL', cnn: 'SELL', rl: 'HOLD', killzone: true, news_clear: true },
     claude: {
       decision: 'SKIP', confidence: 42, risk_adjustment: 1.0,
@@ -146,7 +146,7 @@ const DEMO_SIGNALS: SignalDetected[] = [
     }
   },
   {
-    signal_id: 'demo-3', symbol: 'GBPUSD#', timeframe: 'M5', direction: 'HOLD', confluence: 1,
+    signal_id: 'demo-3', ts: Date.now(), symbol: 'GBPUSD#', timeframe: 'M5', direction: 'HOLD', confluence: 1,
     sources: { smc: 'HOLD', cnn: 'BUY', rl: 'SELL', killzone: false, news_clear: true },
     claude: null
   },
