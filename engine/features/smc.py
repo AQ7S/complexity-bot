@@ -11,11 +11,15 @@ Public API:
 """
 from __future__ import annotations
 
+import contextlib
+import io
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-from smartmoneyconcepts import smc
+
+with contextlib.redirect_stdout(io.StringIO()):
+    from smartmoneyconcepts import smc
 
 REQUIRED_COLS = ("open", "high", "low", "close")
 

@@ -57,8 +57,9 @@ async def _make_command_handler(state: EngineState):
     from engine.ipc.messages import (
         Ack, CmdEmergencyClose, CmdGetSettings, CmdGetTrades, CmdManualRetrain,
         CmdPause, CmdRunBacktest, CmdSetAlert, CmdSettingsUpdate,
-        SettingsSnapshot, TradesSnapshot,
+        CmdStrategyToggle, SettingsSnapshot, TradesSnapshot,
     )
+    from engine.strategy import orchestrator_runtime
 
     async def handle(type_: str, model: Any) -> Ack:
         if type_ == "cmd_pause":
@@ -78,8 +79,65 @@ async def _make_command_handler(state: EngineState):
 
         if type_ == "cmd_manual_retrain":
             assert isinstance(model, CmdManualRetrain)
-            logger.info("manual retrain requested for {} (Phase 12 worker)", model.model)
-            return Ack(ref_type=type_, ok=True, error="queued")
+            try:
+                from engine.models import train_online
+                from engine.ipc.messages import ModelUpdate, Notification
+                from datetime import datetime as _dt
+                target_model = str(model.model)
+                next_v = train_online.latest_checkpoint_version(target_model) + 1
+                BUS.publish("model_update", ModelUpdate(
+                    model_name=target_model, version=f"retrain_starting_v{next_v}",
+                    accuracy=None, loss=None,
+                ))
+                BUS.publish("notification", Notification(
+                    event="TRAINING_COMPLETE",
+                    title=f"Retrain queued: {target_model}",
+                    body=f"Spawning low-priority worker for v{next_v}…",
+                    sound="signal.wav",
+                ))
+                async def _supervise():
+                    try:
+                        loop = asyncio.get_event_loop()
+                        st = train_online.OnlineState()
+                        proc = await loop.run_in_executor(
+                            None,
+                            lambda: train_online.spawn_retrain(
+                                st,
+                                worker=train_online._stub_retrain_worker,
+                                worker_args=(next_v, target_model),
+                                model_name=target_model,
+                            ),
+                        )
+                        while proc.is_alive():
+                            await asyncio.sleep(0.5)
+                        proc.join(timeout=2)
+                        new_path = train_online._newest_checkpoint(target_model)
+                        version = new_path.stem if new_path else f"{target_model}_v{next_v}_{_dt.utcnow():%Y%m%d}"
+                        BUS.publish("model_update", ModelUpdate(
+                            model_name=target_model, version=version,
+                            accuracy=None, loss=None,
+                        ))
+                        BUS.publish("notification", Notification(
+                            event="TRAINING_COMPLETE",
+                            title=f"Retrain complete: {target_model}",
+                            body=f"New checkpoint: {version}",
+                            sound="complete.wav",
+                        ))
+                        logger.info("manual retrain complete model={} version={}",
+                                    target_model, version)
+                    except Exception as e:  # noqa: BLE001
+                        logger.exception("manual retrain supervisor failed")
+                        BUS.publish("notification", Notification(
+                            event="ENGINE_ERROR",
+                            title="Retrain failed",
+                            body=f"{type(e).__name__}: {e}",
+                            sound="error.wav",
+                        ))
+                asyncio.create_task(_supervise())
+                return Ack(ref_type=type_, ok=True, error=f"spawned v{next_v}")
+            except Exception as e:  # noqa: BLE001
+                logger.exception("manual retrain command failed")
+                return Ack(ref_type=type_, ok=False, error=f"{type(e).__name__}: {e}")
 
         if type_ == "cmd_settings_update":
             assert isinstance(model, CmdSettingsUpdate)
@@ -99,7 +157,64 @@ async def _make_command_handler(state: EngineState):
 
         if type_ == "cmd_run_backtest":
             assert isinstance(model, CmdRunBacktest)
-            return Ack(ref_type=type_, ok=True, error="not implemented in phase 10")
+            try:
+                from datetime import datetime as _dt
+                from engine.strategy.backtest import (
+                    BacktestConfig, run_backtest as _run_bt, format_report,
+                )
+                from engine.ipc.messages import BacktestResult as _BR
+                cfg_extra = model.strategy_config or {}
+                cfg = BacktestConfig(
+                    symbol=model.symbol,
+                    from_date=_dt.fromisoformat(model.from_),
+                    to_date=_dt.fromisoformat(model.to),
+                    timeframe=str(cfg_extra.get("timeframe", "M5")),
+                    starting_equity=float(cfg_extra.get("starting_equity", 10_000.0)),
+                    risk_pct=float(cfg_extra.get("risk_pct", 0.02)),
+                    min_confluence=int(cfg_extra.get("min_confluence", 3)),
+                )
+
+                async def _run():
+                    try:
+                        report = await asyncio.to_thread(_run_bt, cfg)
+                        BUS.publish("backtest_result", _BR(
+                            symbol=cfg.symbol, timeframe=cfg.timeframe,
+                            from_date=cfg.from_date.isoformat(),
+                            to_date=cfg.to_date.isoformat(),
+                            total_trades=report.total_trades, wins=report.wins, losses=report.losses,
+                            win_rate=report.win_rate, net_pnl_usd=report.net_pnl_usd,
+                            avg_r_multiple=report.avg_r_multiple, sharpe=report.sharpe,
+                            profit_factor=report.profit_factor,
+                            max_drawdown_pct=report.max_drawdown_pct,
+                            spread_pips_used=report.spread_pips_used,
+                            slippage_pips_used=report.slippage_pips_used,
+                            swap_long_pips_used=report.swap_long_pips_used,
+                            swap_short_pips_used=report.swap_short_pips_used,
+                            starting_equity=report.starting_equity,
+                            ending_equity=report.ending_equity,
+                        ))
+                        logger.info("backtest complete:\n{}", format_report(report))
+                    except Exception as e:  # noqa: BLE001
+                        logger.exception("backtest failed")
+                        BUS.publish("backtest_result", _BR(
+                            symbol=cfg.symbol, timeframe=cfg.timeframe,
+                            from_date=cfg.from_date.isoformat(),
+                            to_date=cfg.to_date.isoformat(),
+                            total_trades=0, wins=0, losses=0, win_rate=0.0,
+                            net_pnl_usd=0.0, avg_r_multiple=0.0, sharpe=0.0,
+                            profit_factor=0.0, max_drawdown_pct=0.0,
+                            spread_pips_used=0.0, slippage_pips_used=0.0,
+                            swap_long_pips_used=0.0, swap_short_pips_used=0.0,
+                            starting_equity=cfg.starting_equity,
+                            ending_equity=cfg.starting_equity,
+                            error=f"{type(e).__name__}: {e}",
+                        ))
+
+                asyncio.create_task(_run())
+                return Ack(ref_type=type_, ok=True, error=f"backtest queued: {cfg.symbol} {cfg.from_date.date()}→{cfg.to_date.date()}")
+            except Exception as e:  # noqa: BLE001
+                logger.exception("cmd_run_backtest dispatch failed")
+                return Ack(ref_type=type_, ok=False, error=f"{type(e).__name__}: {e}")
 
         if type_ == "cmd_get_trades":
             assert isinstance(model, CmdGetTrades)
@@ -126,6 +241,19 @@ async def _make_command_handler(state: EngineState):
                     ).fetchall()
                 values = {r["k"]: r["v"] for r in rows}
                 BUS.publish("settings_snapshot", SettingsSnapshot(values=values))
+                return Ack(ref_type=type_, ok=True)
+            except Exception as e:  # noqa: BLE001
+                return Ack(ref_type=type_, ok=False, error=f"{type(e).__name__}: {e}")
+
+        if type_ == "cmd_strategy_toggle":
+            assert isinstance(model, CmdStrategyToggle)
+            try:
+                orch = orchestrator_runtime.get_orchestrator()
+                ok = orch.set_mode(model.name, model.mode)
+                if not ok:
+                    return Ack(ref_type=type_, ok=False, error=f"unknown strategy {model.name!r}")
+                BUS.publish("strategy_status", orch.snapshot())
+                logger.info("strategy {} → mode {}", model.name, model.mode)
                 return Ack(ref_type=type_, ok=True)
             except Exception as e:  # noqa: BLE001
                 return Ack(ref_type=type_, ok=False, error=f"{type(e).__name__}: {e}")
@@ -202,6 +330,115 @@ async def _account_snapshot_loop(state: EngineState, interval_s: float = 2.0) ->
             pass
 
 
+async def _shadow_monitor_loop(state: EngineState, interval_s: float = 60.0) -> None:
+    from engine.ipc.broadcaster import BUS
+    from engine.ipc.messages import (
+        ShadowStatus, ModelPromotionReady, CalibrationUpdate,
+    )
+    from engine.execution.shadow_trader import (
+        monitor_open_shadow_trades, compute_shadow_stats, is_promotion_ready,
+    )
+    from engine.learning.calibration import (
+        recompute_and_persist, closed_shadow_trade_count, latest_calibration,
+    )
+    last_calib_at = 0
+
+    def _live_prices() -> dict[str, float]:
+        try:
+            import MetaTrader5 as mt5
+            from engine.config.symbols import SYMBOLS_13
+            out: dict[str, float] = {}
+            for sym in SYMBOLS_13:
+                tick = mt5.symbol_info_tick(sym.name)
+                if tick is None or tick.time_msc == 0:
+                    continue
+                out[sym.name] = float((tick.bid + tick.ask) / 2.0)
+            return out
+        except Exception:
+            return {}
+
+    while not state.stop_event.is_set():
+        try:
+            prices = await asyncio.to_thread(_live_prices)
+            await asyncio.to_thread(monitor_open_shadow_trades, prices)
+            stats = await asyncio.to_thread(compute_shadow_stats)
+            BUS.publish("shadow_status", ShadowStatus(
+                active=settings.shadow_mode_active(),
+                total=stats.total, open_count=stats.open_count,
+                closed_count=stats.closed_count,
+                wins=stats.wins, losses=stats.losses, time_exits=stats.time_exits,
+                win_rate=stats.win_rate, avg_r=stats.avg_r, sharpe=stats.sharpe,
+                cumulative_pnl_r=stats.cumulative_pnl_r,
+            ))
+
+            closed = await asyncio.to_thread(closed_shadow_trade_count)
+            if closed >= settings.ECE_RECOMPUTE_EVERY_N_TRADES and closed != last_calib_at and closed % settings.ECE_RECOMPUTE_EVERY_N_TRADES == 0:
+                cal = await asyncio.to_thread(recompute_and_persist)
+                last_calib_at = closed
+                if cal.n_trades > 0:
+                    BUS.publish("calibration_update", CalibrationUpdate(
+                        ece_score=cal.ece_score, n_trades=cal.n_trades,
+                        bins=[b.as_dict() for b in cal.bins],
+                        overconfident=cal.overconfident,
+                    ))
+
+            ready, ready_stats = await asyncio.to_thread(is_promotion_ready, None)
+            if ready:
+                BUS.publish("model_promotion_ready", ModelPromotionReady(
+                    current_model_sharpe=None,
+                    shadow_sharpe=ready_stats.sharpe,
+                    shadow_win_rate=ready_stats.win_rate,
+                    shadow_trades=ready_stats.closed_count,
+                    avg_r=ready_stats.avg_r,
+                ))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("shadow monitor loop: {}", e)
+        try:
+            await asyncio.wait_for(state.stop_event.wait(), timeout=interval_s)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def _macro_snapshot_loop(state: EngineState, interval_s: float = 60.0) -> None:
+    from engine.ipc.broadcaster import BUS
+    from engine.ipc.messages import MacroSnapshot as MacroSnapshotMsg
+    from engine.news.macro_data import get_macro_snapshot
+
+    while not state.stop_event.is_set():
+        try:
+            snap = await asyncio.to_thread(get_macro_snapshot)
+            BUS.publish("macro_snapshot", MacroSnapshotMsg(
+                yield_curve_bias=snap.yield_curve_bias,
+                crypto_fear_greed=snap.crypto_fear_greed,
+                fear_greed_value=snap.fear_greed_value,
+                spread_us10y_us2y=snap.spread_us10y_us2y,
+            ))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("macro snapshot loop: {}", e)
+        try:
+            await asyncio.wait_for(state.stop_event.wait(), timeout=interval_s)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def _strategy_status_loop(state: EngineState, interval_s: float = 5.0) -> None:
+    """Publish the orchestrator snapshot every `interval_s` so the
+    /strategies UI page stays current with weights + breaker state."""
+    from engine.ipc.broadcaster import BUS
+    from engine.strategy import orchestrator_runtime
+
+    while not state.stop_event.is_set():
+        try:
+            orch = orchestrator_runtime.get_orchestrator()
+            BUS.publish("strategy_status", orch.snapshot())
+        except Exception as e:  # noqa: BLE001
+            logger.warning("strategy status loop: {}", e)
+        try:
+            await asyncio.wait_for(state.stop_event.wait(), timeout=interval_s)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def _tick_publish_loop(state: EngineState, interval_s: float = 0.5) -> None:
     """Poll the latest tick for each watchlist symbol; publish deltas only."""
     from engine.config.symbols import SYMBOLS_13
@@ -256,10 +493,30 @@ async def run() -> int:
     server = WSServer(on_command=handler)
     await server.start()
 
+    try:
+        from engine.data.event_log import log_event as _log_event
+        _log_event("ENGINE_START", None, {"uptime_s": 0})
+    except Exception as e:  # noqa: BLE001
+        logger.warning("event_log start failed: {}", e)
+
+    try:
+        from engine.watchdog import serve_health_endpoint
+        await serve_health_endpoint(state)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("/health endpoint failed to start: {}", e)
+
     tasks: list[asyncio.Task] = [
         asyncio.create_task(_heartbeat_loop(state)),
         asyncio.create_task(_telemetry_loop(state)),
+        asyncio.create_task(_macro_snapshot_loop(state)),
+        asyncio.create_task(_shadow_monitor_loop(state)),
+        asyncio.create_task(_strategy_status_loop(state)),
     ]
+    logger.info(
+        "shadow_mode={} — order_send will {} real MT5 calls",
+        settings.shadow_mode_active(),
+        "BYPASS" if settings.shadow_mode_active() else "MAKE",
+    )
 
     if settings.have_mt5_credentials():
         try:

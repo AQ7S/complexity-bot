@@ -28,6 +28,9 @@ class Sources:
     rl: Vote | None            # None ⇒ agent failed; treated as HOLD
     killzone_ok: bool
     news_clear: bool
+    ofi: Vote = "HOLD"         # Order Flow Imbalance vote (6th source)
+    candle: Vote = "HOLD"      # TA-Lib candlestick pattern vote (7th source)
+    po3: Vote = "HOLD"         # Power-of-Three sweep+reclaim signal (bonus, +1 to confluence if it agrees)
 
 
 @dataclass
@@ -61,6 +64,7 @@ PRECONDITION_REJECTIONS = (
     "REJECTED_CORRELATION",
     "REJECTED_NEWS",
     "REJECTED_KILL_ZONE",
+    "REJECTED_VPIN_TOXIC",
 )
 
 
@@ -71,6 +75,7 @@ class State:
     spread_widened: bool = False
     open_positions: int = 0
     correlated_open: int = 0
+    vpin_toxic: bool = False           # True ⇒ order flow toxic (VPIN > threshold)
 
 
 def _direction_from(votes: list[Vote]) -> Vote:
@@ -100,20 +105,23 @@ def evaluate(
         return ConsensusResult("REJECTED_CORRELATION", reason=f"{state.correlated_open} correlated open")
     if not sources.news_clear:                       return ConsensusResult("REJECTED_NEWS", reason="news within window")
     if not sources.killzone_ok:                      return ConsensusResult("REJECTED_KILL_ZONE", reason="outside ICT kill zone")
+    if state.vpin_toxic:                             return ConsensusResult("REJECTED_VPIN_TOXIC", reason="VPIN flow toxic")
 
-    # 8: votes + direction + consensus count
+    # 8: votes + direction + consensus count (7-vote model: smc, cnn, rl, ofi, candle + killzone + news)
     fallback = sources.cnn is None
     cnn_vote: Vote = "HOLD" if sources.cnn is None else sources.cnn.label
     rl_vote: Vote = "HOLD" if sources.rl is None else sources.rl
-    directional = [sources.smc, cnn_vote, rl_vote]
+    directional = [sources.smc, cnn_vote, rl_vote, sources.ofi, sources.candle]
     direction = _direction_from(directional)
     if direction == "HOLD":
         return ConsensusResult(
             "REJECTED_NO_DIRECTION",
-            reason="no majority among SMC/CNN/RL",
+            reason="no majority among SMC/CNN/RL/OFI/CANDLE",
             detail={"directional_votes": directional},
         )
-    confluence = sum(1 for v in directional if v == direction) + 2  # killzone_ok + news_clear
+    confluence = sum(1 for v in directional if v == direction) + 2  # killzone_ok + news_clear (both required true above)
+    if sources.po3 == direction:
+        confluence += 1  # PO3 sweep+reclaim agreeing with direction is a bonus
 
     # 9: minimum agreement
     if confluence < min_agree:

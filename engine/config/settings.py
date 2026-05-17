@@ -139,3 +139,50 @@ def have_supabase() -> bool:
         bool(SUPABASE_URL) and bool(SUPABASE_SERVICE_ROLE_KEY)
         and not SUPABASE_URL.startswith("https://abcdxyz")
     )
+
+
+# --- Shadow Mode (no real orders) -------------------------------------------
+SHADOW_MODE: bool = os.environ.get("SHADOW_MODE", "true").lower() == "true"
+SHADOW_HEALTH_TIMEOUT_BARS: int = int(os.environ.get("SHADOW_TIME_EXIT_BARS", "48"))
+SHADOW_PROMOTION_MIN_TRADES: int = int(os.environ.get("SHADOW_PROMOTION_MIN_TRADES", "100"))
+SHADOW_PROMOTION_WR_FLOOR: float = float(os.environ.get("SHADOW_PROMOTION_WR_FLOOR", "0.50"))
+SHADOW_PROMOTION_SHARPE_FACTOR: float = float(os.environ.get("SHADOW_PROMOTION_SHARPE_FACTOR", "1.10"))
+
+
+def shadow_mode_active() -> bool:
+    return SHADOW_MODE
+
+
+# --- Calibration (ECE) -------------------------------------------------------
+ECE_RECOMPUTE_EVERY_N_TRADES: int = int(os.environ.get("ECE_RECOMPUTE_EVERY_N_TRADES", "50"))
+ECE_OVERCONFIDENT_THRESHOLD: float = float(os.environ.get("ECE_OVERCONFIDENT_THRESHOLD", "0.20"))
+
+
+# --- Health endpoint --------------------------------------------------------
+IPC_HEALTH_PORT: int = int(os.environ.get("IPC_HEALTH_PORT", "8766"))
+EVENT_LOG_PATH: str = os.environ.get(
+    "EVENT_LOG_PATH", str(_USER_DATA_DIR / "store" / "events.duckdb")
+)
+
+
+# --- External news APIs -----------------------------------------------------
+FOREX_CALENDAR_API_KEY: str | None = os.environ.get("FOREX_CALENDAR_API_KEY") or None
+FINNHUB_API_KEY: str | None = os.environ.get("FINNHUB_API_KEY") or None
+JBLANKED_API_KEY: str | None = os.environ.get("JBLANKED_API_KEY") or None
+FRED_API_KEY: str | None = os.environ.get("FRED_API_KEY") or None
+
+
+def _key_active(key: str | None) -> bool:
+    if not key:
+        return False
+    if key in ("unset", "none", "null"):
+        return False
+    if key.lower().startswith(("jb_xxx", "fcp_xxx", "cq_xxx", "cp_xxx", "sk-ant-api03-xxxx", "xxx")):
+        return False
+    return True
+
+
+def have_forex_calendar() -> bool: return _key_active(FOREX_CALENDAR_API_KEY)
+def have_finnhub() -> bool:        return _key_active(FINNHUB_API_KEY)
+def have_jblanked() -> bool:       return _key_active(JBLANKED_API_KEY)
+def have_fred() -> bool:           return _key_active(FRED_API_KEY)

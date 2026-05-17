@@ -937,6 +937,60 @@
       "title": "SettingsSnapshot",
       "type": "object"
     },
+    "macro_snapshot": {
+      "properties": {
+        "yield_curve_bias": {
+          "enum": [
+            "USD_BULLISH",
+            "USD_BEARISH",
+            "NEUTRAL"
+          ],
+          "title": "Yield Curve Bias",
+          "type": "string"
+        },
+        "crypto_fear_greed": {
+          "enum": [
+            "EXTREME_FEAR",
+            "FEAR",
+            "NEUTRAL",
+            "GREED",
+            "EXTREME_GREED"
+          ],
+          "title": "Crypto Fear Greed",
+          "type": "string"
+        },
+        "fear_greed_value": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fear Greed Value"
+        },
+        "spread_us10y_us2y": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Spread Us10Y Us2Y"
+        }
+      },
+      "required": [
+        "yield_curve_bias",
+        "crypto_fear_greed"
+      ],
+      "title": "MacroSnapshot",
+      "type": "object"
+    },
     "ack": {
       "properties": {
         "ref_type": {

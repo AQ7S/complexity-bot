@@ -1,13 +1,66 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;600&family=DM+Sans:wght@300;400;500&family=Orbitron:wght@700;900&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
+  --void:       #050810;
+  --panel:      #080d1a;
+  --surface:    #0b1220;
+  --card:       #0f1827;
+  --card-hover: #131e30;
+  --elevated:   #172035;
+  --border:     #1c2d45;
+  --border-sub: #111d32;
+  --cyan:       #00d4ff;
+  --cyan-dim:   #00a8cc;
+  --purple:     #7c3aed;
+  --purple-dim: #5b2db0;
+  --green:      #10b981;
+  --green-dim:  #0a8f63;
+  --amber:      #f59e0b;
+  --amber-dim:  #c27d08;
+  --red:        #ef4444;
+  --red-dim:    #c03030;
+  --gold:       #d4a017;
+  --text:       #e2e8f0;
+  --text-2:     #94a3b8;
+  --text-3:     #4a5568;
   color-scheme: dark;
 }
 
 html, body, #root {
   height: 100%;
   margin: 0;
-  background: #0a0e1a;
+  background: var(--void);
+  color: var(--text);
+  font-family: 'DM Sans', sans-serif;
 }
+
+.font-mono { font-family: 'JetBrains Mono', monospace; }
+.font-ui   { font-family: 'Space Grotesk', sans-serif; }
+.font-body { font-family: 'DM Sans', sans-serif; }
+.font-hero { font-family: 'Orbitron', sans-serif; }
+
+::-webkit-scrollbar       { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--void); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--cyan-dim); }
+
+@keyframes price-flash-up   { 0%,100%{color:var(--text)} 30%{color:var(--cyan)} }
+@keyframes price-flash-down { 0%,100%{color:var(--text)} 30%{color:var(--red)} }
+@keyframes pulse-glow-buy   { 0%,100%{box-shadow:0 0 0 0 rgba(16,185,129,0)} 50%{box-shadow:0 0 8px 2px rgba(16,185,129,0.4)} }
+@keyframes pulse-glow-sell  { 0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,0)} 50%{box-shadow:0 0 8px 2px rgba(239,68,68,0.4)} }
+@keyframes blink-dot        { 0%,100%{opacity:1} 50%{opacity:0.3} }
+@keyframes slide-in-right   { from{opacity:0;transform:translateX(16px)} to{opacity:1;transform:translateX(0)} }
+@keyframes slide-up         { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
+@keyframes counter-up       { from{transform:translateY(4px);opacity:0} to{transform:translateY(0);opacity:1} }
+
+.price-up    { animation: price-flash-up 0.4s ease; color: var(--cyan); }
+.price-down  { animation: price-flash-down 0.4s ease; color: var(--red); }
+.signal-buy  { animation: pulse-glow-buy 2s ease infinite; }
+.signal-sell { animation: pulse-glow-sell 2s ease infinite; }
+.live-dot    { animation: blink-dot 1.8s ease infinite; }
+.slide-in-right { animation: slide-in-right 0.3s ease; }
+.slide-up       { animation: slide-up 0.3s ease; }

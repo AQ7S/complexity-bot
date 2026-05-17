@@ -25,8 +25,11 @@ from loguru import logger
 from torch.utils.data import DataLoader, TensorDataset
 
 from engine.data import duckdb_store
+from engine.learning.purged_cv import aggregate_folds, purged_kfold_indices
+from engine.learning.triple_barrier import build_triple_barrier_dataset
 from engine.models.cnn_lstm import N_CLASSES, build_model
-from engine.models.dataset import build_windows
+from engine.models.dataset import build_feature_frame, build_windows
+from engine.features.feature_pipeline import N_FEATURES, SEQUENCE_LEN
 
 CHECKPOINT_DIR = Path(__file__).resolve().parent / "checkpoints"
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
@@ -37,6 +40,48 @@ TIER_PROFILES: dict[str, dict] = {
     "production": {"days": 365 * 3,   "epochs": 50, "batch": 64, "lr": 1e-4,
                    "patience": 8,     "min_val_acc": 0.52},
 }
+
+
+def build_windows_triple_barrier(
+    bars: pd.DataFrame,
+    *,
+    pt_mult: float,
+    sl_mult: float,
+    max_h: int,
+    sequence_len: int = SEQUENCE_LEN,
+    warmup: int = 200,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build (X, y, label_horizons) where labels come from triple-barrier method.
+
+    `label_horizons[i]` is the bar index at which label `i` was determined —
+    used by purged CV to drop overlapping training samples.
+    """
+    feats = build_feature_frame(bars)
+    feats = feats.replace([np.inf, -np.inf], np.nan).ffill().bfill().fillna(0.0)
+    feat_arr = feats.to_numpy(dtype=np.float32, copy=False)
+
+    mu = feat_arr[warmup : warmup + sequence_len * 200].mean(axis=0, keepdims=True)
+    sd = feat_arr[warmup : warmup + sequence_len * 200].std(axis=0, keepdims=True)
+    sd = np.where(sd < 1e-9, 1.0, sd)
+    feat_norm = np.clip((feat_arr - mu) / sd, -10.0, 10.0).astype(np.float32, copy=False)
+
+    t0, labels, _ = build_triple_barrier_dataset(
+        bars, pt_mult=pt_mult, sl_mult=sl_mult, max_h=max_h,
+        skip_first=max(warmup, sequence_len),
+    )
+    # Need full lookback window available behind each t0.
+    valid = t0 >= (sequence_len - 1)
+    t0 = t0[valid]
+    labels = labels[valid]
+    if len(t0) == 0:
+        raise ValueError("triple-barrier produced no usable samples")
+
+    X = np.empty((len(t0), sequence_len, N_FEATURES), dtype=np.float32)
+    for k, i in enumerate(t0):
+        X[k] = feat_norm[i - sequence_len + 1 : i + 1]
+    # Label horizon = end-of-trade bar (t0 + max_h, clipped).
+    horizons = np.minimum(t0 + max_h, len(feat_norm) - 1).astype(np.int64)
+    return X, labels.astype(np.int64), horizons
 
 
 def _resample_m5(df_m1: pd.DataFrame) -> pd.DataFrame:
@@ -78,6 +123,74 @@ def class_weights(y: np.ndarray, n_classes: int = N_CLASSES) -> torch.Tensor:
     return torch.tensor(w, dtype=torch.float32)
 
 
+def _run_purged_cv_eval(
+    X: np.ndarray,
+    y: np.ndarray,
+    horizons: np.ndarray | None,
+    *,
+    n_splits: int,
+    embargo_pct: float,
+    device: torch.device,
+    batch_size: int,
+    eval_epochs: int,
+    lr: float,
+) -> dict[str, float]:
+    """Honest OOS validation via purged + embargoed k-fold.
+
+    Trains a fresh model per fold for `eval_epochs` (small) and reports
+    per-fold + aggregate accuracy. Does NOT save these models — purely
+    measurement.
+    """
+    fold_scores: list[float] = []
+    for k, train_idx, test_idx in purged_kfold_indices(
+        n_samples=len(X), n_splits=n_splits,
+        label_horizons=horizons, embargo_pct=embargo_pct,
+    ):
+        if len(train_idx) == 0 or len(test_idx) == 0:
+            continue
+        X_tr, X_te = X[train_idx], X[test_idx]
+        y_tr, y_te = y[train_idx], y[test_idx]
+        tr = TensorDataset(torch.from_numpy(X_tr).unsqueeze(1), torch.from_numpy(y_tr))
+        te = TensorDataset(torch.from_numpy(X_te).unsqueeze(1), torch.from_numpy(y_te))
+        tr_loader = DataLoader(tr, batch_size=batch_size, shuffle=True, drop_last=True)
+        te_loader = DataLoader(te, batch_size=batch_size, shuffle=False)
+        model = build_model(device)
+        weights = class_weights(y_tr).to(device)
+        criterion = nn.CrossEntropyLoss(weight=weights)
+        opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
+        for _ in range(eval_epochs):
+            model.train()
+            for xb, yb in tr_loader:
+                xb, yb = xb.to(device), yb.to(device)
+                opt.zero_grad()
+                loss = criterion(model(xb), yb)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                opt.step()
+        model.eval()
+        correct = seen = 0
+        with torch.no_grad():
+            for xb, yb in te_loader:
+                xb, yb = xb.to(device), yb.to(device)
+                logits = model(xb)
+                correct += (logits.argmax(-1) == yb).sum().item()
+                seen += yb.size(0)
+        acc = correct / max(seen, 1)
+        fold_scores.append(acc)
+        logger.info("  fold {}/{}: n_train={} n_test={} acc={:.4f}",
+                    k + 1, n_splits, len(train_idx), len(test_idx), acc)
+    if not fold_scores:
+        return {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "n_folds": 0}
+    arr = np.array(fold_scores, dtype=np.float64)
+    return {
+        "mean": float(arr.mean()),
+        "std": float(arr.std(ddof=1)) if arr.size > 1 else 0.0,
+        "min": float(arr.min()),
+        "max": float(arr.max()),
+        "n_folds": int(arr.size),
+    }
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--tier", choices=["build", "production"], default="build")
@@ -92,6 +205,35 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--db-path", default=None)
     p.add_argument("--device", default=None,
                    help="cpu | cuda | mps | dml; default = auto")
+    p.add_argument("--ewc-lambda", type=float, default=0.0,
+                   dest="ewc_lambda",
+                   help="EWC regularization strength (0 = disabled). "
+                        "Typical: 1000-5000. Requires --ewc-prior-checkpoint.")
+    p.add_argument("--ewc-prior-checkpoint", default=None,
+                   dest="ewc_prior_checkpoint",
+                   help="Path to a prior .pt checkpoint whose weights/Fisher to protect.")
+    p.add_argument("--label-method",
+                   choices=["next_bar", "triple_barrier"],
+                   default="next_bar",
+                   dest="label_method",
+                   help="Labeling scheme. triple_barrier uses pt/sl/timeout barriers "
+                        "(López de Prado AFML ch. 3) for realistic trade-outcome labels.")
+    p.add_argument("--pt-mult", type=float, default=2.0, dest="pt_mult",
+                   help="Profit-target multiplier for triple_barrier labels.")
+    p.add_argument("--sl-mult", type=float, default=1.0, dest="sl_mult",
+                   help="Stop-loss multiplier for triple_barrier labels.")
+    p.add_argument("--max-h", type=int, default=48, dest="max_h",
+                   help="Maximum holding bars (vertical barrier) for triple_barrier.")
+    p.add_argument("--cv",
+                   choices=["holdout", "purged_kfold"],
+                   default="holdout",
+                   dest="cv",
+                   help="Validation method. purged_kfold runs López-de-Prado purged "
+                        "+ embargoed walk-forward k-fold CV.")
+    p.add_argument("--n-splits", type=int, default=5, dest="n_splits",
+                   help="Number of folds for purged_kfold CV.")
+    p.add_argument("--embargo-pct", type=float, default=0.01, dest="embargo_pct",
+                   help="Embargo width as fraction of n_samples for purged_kfold.")
     return p.parse_args(argv)
 
 
@@ -120,21 +262,48 @@ def train(args: argparse.Namespace) -> dict:
     logger.info("training {} on {} ({} days, {} epochs, device={})",
                 "cnn_lstm", symbols, days, epochs, device)
 
-    Xs, ys = [], []
+    label_method = getattr(args, "label_method", "next_bar")
+    Xs: list[np.ndarray] = []
+    ys: list[np.ndarray] = []
+    horizons_list: list[np.ndarray] = []
     for sym in symbols:
         bars = load_bars(sym, days, db_path=args.db_path)
         logger.info("  {}: {} M5 bars from {} → {}", sym, len(bars),
                     bars.index[0], bars.index[-1])
-        X, y = build_windows(bars)
-        logger.info("  {}: {} training windows; class counts={}",
-                    sym, len(y), np.bincount(y, minlength=3).tolist())
-        Xs.append(X); ys.append(y)
+        if label_method == "triple_barrier":
+            Xs_, ys_, horiz_ = build_windows_triple_barrier(
+                bars,
+                pt_mult=args.pt_mult,
+                sl_mult=args.sl_mult,
+                max_h=args.max_h,
+            )
+            horizons_list.append(horiz_)
+        else:
+            Xs_, ys_ = build_windows(bars)
+        logger.info("  {}: {} training windows ({} labels); class counts={}",
+                    sym, len(ys_), label_method,
+                    np.bincount(ys_, minlength=3).tolist())
+        Xs.append(Xs_); ys.append(ys_)
     X = np.concatenate(Xs)
     y = np.concatenate(ys)
+    horizons = np.concatenate(horizons_list) if horizons_list else None
 
     # Per-feature stats from training set only (for inference normalization).
     feat_mean = X.reshape(-1, X.shape[-1]).mean(axis=0)
     feat_std = X.reshape(-1, X.shape[-1]).std(axis=0)
+
+    cv_report: dict[str, float] | None = None
+    if getattr(args, "cv", "holdout") == "purged_kfold":
+        cv_report = _run_purged_cv_eval(
+            X, y, horizons,
+            n_splits=int(args.n_splits),
+            embargo_pct=float(args.embargo_pct),
+            device=device,
+            batch_size=batch_size,
+            eval_epochs=max(2, min(epochs // 3, 5)),
+            lr=profile["lr"],
+        )
+        logger.info("purged_kfold: {}", cv_report)
 
     # Chronological 80/20 split — no shuffle across boundary.
     cut = int(len(X) * 0.8)
@@ -156,6 +325,24 @@ def train(args: argparse.Namespace) -> dict:
     optimizer = torch.optim.AdamW(model.parameters(), lr=profile["lr"], weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
 
+    ewc_snapshot = None
+    ewc_lambda = float(getattr(args, "ewc_lambda", 0.0) or 0.0)
+    prior_ckpt = getattr(args, "ewc_prior_checkpoint", None)
+    if prior_ckpt and ewc_lambda > 0:
+        try:
+            from engine.models.ewc import compute_fisher_information
+            prior_state = torch.load(prior_ckpt, map_location=device, weights_only=False)
+            tmp_model = build_model(device)
+            tmp_model.load_state_dict(prior_state["model_state"])
+            ewc_snapshot = compute_fisher_information(
+                tmp_model, train_loader, device=device, max_batches=100,
+            )
+            logger.info("EWC enabled: lambda={} prior={} fisher_params={}",
+                        ewc_lambda, prior_ckpt, len(ewc_snapshot.fisher))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("EWC setup failed, training without it: {}", e)
+            ewc_snapshot = None
+
     best_val_acc = 0.0
     best_state = None
     patience = profile["patience"]
@@ -171,7 +358,12 @@ def train(args: argparse.Namespace) -> dict:
             xb, yb = xb.to(device), yb.to(device)
             optimizer.zero_grad()
             logits = model(xb)
-            loss = criterion(logits, yb)
+            task_loss = criterion(logits, yb)
+            if ewc_snapshot is not None and ewc_lambda > 0:
+                from engine.models.ewc import ewc_penalty
+                loss = task_loss + ewc_penalty(model, ewc_snapshot, lambda_ewc=ewc_lambda)
+            else:
+                loss = task_loss
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -227,13 +419,17 @@ def train(args: argparse.Namespace) -> dict:
     }, ckpt_path)
     logger.info("checkpoint saved → {} (best_val_acc={:.4f})", ckpt_path, best_val_acc)
 
-    return {
+    out = {
         "checkpoint": str(ckpt_path),
         "best_val_acc": best_val_acc,
         "min_val_acc": profile["min_val_acc"],
         "elapsed_s": time.time() - t0,
         "history": history,
+        "label_method": label_method,
     }
+    if cv_report is not None:
+        out["purged_kfold"] = cv_report
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:

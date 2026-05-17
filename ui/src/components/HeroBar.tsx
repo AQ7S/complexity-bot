@@ -4,7 +4,6 @@ import { useEngineStore } from '@/store/engineStore';
 import { AnimatedNumber } from './AnimatedNumber';
 import { fmtUsd, fmtSignedUsd } from '@/lib/format';
 import { sendCommand } from '@/hooks/useEngineSocket';
-import NotificationBell from './NotificationBell';
 
 function ageHuman(ms: number): string {
   if (!isFinite(ms)) return 'never';
@@ -140,7 +139,6 @@ export default function HeroBar() {
           <p className="text-[10px] uppercase tracking-wider text-white/50">Open</p>
           <p className="text-2xl text-white">{account?.open_positions ?? 0}</p>
         </div>
-        <NotificationBell />
       </div>
     </header>
   );

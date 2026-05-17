@@ -28,6 +28,13 @@ export function useEngineSocket(): void {
         case 'trades_snapshot':    st.setTradesHistory((frame.data as any).trades ?? []); break;
         case 'settings_snapshot':  st.setSettingsKv((frame.data as any).values ?? {}); break;
         case 'notification':       st.pushNotification(frame.data as any); break;
+        case 'news_warning':       st.setNewsWarning(frame.data as any); break;
+        case 'weekly_debrief':     st.setWeeklyDebrief(frame.data as any); break;
+        case 'shadow_status':      st.setShadowStatus(frame.data as any); break;
+        case 'model_promotion_ready': st.setPromotionReady(frame.data as any); break;
+        case 'calibration_update': st.setCalibration(frame.data as any); break;
+        case 'backtest_result':    st.setBacktestResult(frame.data as any); break;
+        case 'strategy_status':    st.setStrategyStatus(frame.data as any); break;
       }
     });
     return off;

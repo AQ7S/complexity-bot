@@ -26,9 +26,11 @@ SYSTEM_PROMPT = (
     "3. HARD REJECT if news_spike_detected == true → SKIP\n"
     "4. HARD REJECT if hours_to_next_news < 0.5 → SKIP (30 min pre-news window)\n"
     "5. HARD REJECT if ob_freshness == CONSUMED → SKIP\n"
-    "6. HARD REJECT if h4_bias contradicts direction AND adx_h4 > 25 → SKIP (strong counter-trend)\n\n"
+    "6. HARD REJECT if h4_bias contradicts direction AND adx_h4 > 25 → SKIP (strong counter-trend)\n"
+    "7. HARD REJECT if overconfident_model == true AND confluence_score < 5 → SKIP (model is poorly calibrated, demand higher confluence)\n\n"
     "BOOST confidence by +15 if ALL of: silver_bullet_active AND fvg_ob_confluence AND ote_zone_active\n"
-    "BOOST risk_adjustment to 1.2 if overlap_active AND confluence_score >= 4\n\n"
+    "BOOST risk_adjustment to 1.2 if overlap_active AND confluence_score >= 4\n"
+    "PENALTY: if overconfident_model == true → multiply your final confidence by 0.80 and cap risk_adjustment at 1.0.\n\n"
     "Output ONLY this JSON, no prose, no markdown, no code fences:\n"
     '{ "decision": "BUY"|"SELL"|"SKIP", '
     '"confidence": 0-100, '
@@ -56,6 +58,13 @@ def hard_reject_check(ctx: dict[str, Any]) -> tuple[bool, str]:
         return True, f"H4 bearish trend (ADX {adx_h4:.0f}) — counter-trend BUY rejected"
     if direction == "SELL" and h4_bias == "BULLISH" and adx_h4 > 25:
         return True, f"H4 bullish trend (ADX {adx_h4:.0f}) — counter-trend SELL rejected"
+    if bool(ctx.get("overconfident_model", False)):
+        confluence = int(ctx.get("confluence_score", 0))
+        if confluence < 5:
+            return True, (
+                f"Model is overconfident (ECE > threshold); confluence {confluence}/7 "
+                "insufficient — demand ≥5 setups"
+            )
     return False, ""
 
 
@@ -84,6 +93,20 @@ def build_rich_context(
     ob_distance_pips: float = 0.0,
     liquidity_above_pips: float = 0.0,
     liquidity_below_pips: float = 0.0,
+    candle_vote: int = 0,
+    supertrend_dir: int = 0,
+    squeeze_coiling: bool = False,
+    ofi_score: float = 0.0,
+    po3_direction: str = "NONE",
+    yield_curve_bias: str = "NEUTRAL",
+    crypto_fear_greed: str = "NEUTRAL",
+    fear_greed_value: int | None = None,
+    next_news_event: str | None = None,
+    vpin_score: float = 0.0,
+    vpin_regime: str = "BENIGN",
+    tick_arrival_rate: float = 0.0,
+    trade_intensity: float = 0.0,
+    spread_vs_hourly_median: float = 1.0,
 ) -> dict[str, Any]:
     return {
         "symbol": symbol,
@@ -109,7 +132,53 @@ def build_rich_context(
         "ob_distance_pips": float(ob_distance_pips),
         "liquidity_above_pips": float(liquidity_above_pips),
         "liquidity_below_pips": float(liquidity_below_pips),
+        "candle_vote": int(candle_vote),
+        "supertrend_dir": int(supertrend_dir),
+        "squeeze_coiling": bool(squeeze_coiling),
+        "ofi_score": float(ofi_score),
+        "po3_direction": po3_direction,
+        "yield_curve_bias": yield_curve_bias,
+        "crypto_fear_greed": crypto_fear_greed,
+        "fear_greed_value": fear_greed_value,
+        "next_news_event": next_news_event,
+        "vpin_score": float(vpin_score),
+        "vpin_regime": vpin_regime,
+        "tick_arrival_rate": float(tick_arrival_rate),
+        "trade_intensity": float(trade_intensity),
+        "spread_vs_hourly_median": float(spread_vs_hourly_median),
     }
+
+
+def inject_external_context(context: dict[str, Any]) -> dict[str, Any]:
+    """Augment a Claude context dict with the latest macro + news state.
+
+    Pulled from the live broadcast modules so the gate sees the same world
+    the UI does. Safe to call on every gate invocation — cached calls inside
+    each fetcher prevent API spam.
+    """
+    try:
+        from engine.news.macro_data import get_macro_snapshot
+        snap = get_macro_snapshot()
+        context.setdefault("yield_curve_bias", snap.yield_curve_bias)
+        context.setdefault("crypto_fear_greed", snap.crypto_fear_greed)
+        context.setdefault("fear_greed_value", snap.fear_greed_value)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("inject_external_context macro failed: {}", e)
+
+    try:
+        from engine.news.jblanked import next_high_impact_event, hours_until_high_impact
+        currency = (context.get("symbol") or "")[:3].upper() or None
+        evt = next_high_impact_event(currency=currency)
+        if evt is not None:
+            context.setdefault("hours_to_next_news",
+                               max(0.0, (evt.scheduled_at.timestamp() - __import__("time").time()) / 3600.0))
+            context.setdefault("next_news_event", f"{evt.currency} {evt.name}")
+        else:
+            context.setdefault("hours_to_next_news", 999.0)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("inject_external_context jblanked failed: {}", e)
+
+    return context
 
 
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
@@ -190,8 +259,30 @@ def decide(context: dict, *, model: str | None = None) -> ClaudeResponse:
     raise RuntimeError(f"Claude gate exhausted retries: {last_err}")
 
 
+def inject_calibration_flag(context: dict[str, Any]) -> dict[str, Any]:
+    """Add `overconfident_model` to the Claude context from latest ECE result."""
+    try:
+        from engine.learning.calibration import latest_calibration
+        result = latest_calibration()
+        context["overconfident_model"] = bool(result and result.overconfident)
+        if result:
+            context["ece_score"] = round(float(result.ece_score), 4)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("inject_calibration_flag failed: {}", e)
+        context.setdefault("overconfident_model", False)
+    return context
+
+
 def gate_factory():
-    """Return a `claude_gate` callable suitable for `consensus.evaluate(...)`."""
+    """Return a `claude_gate` callable suitable for `consensus.evaluate(...)`.
+
+    Every call is enriched with the latest calibration state, macro snapshot
+    (yield curve, crypto fear/greed), and the next high-impact news event for
+    the symbol's currency before being sent to Claude.
+    """
     def _call(context: dict) -> ClaudeResponse:
-        return decide(context)
+        ctx = dict(context)
+        ctx = inject_external_context(ctx)
+        ctx = inject_calibration_flag(ctx)
+        return decide(ctx)
     return _call

@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useEngineStore } from '@/store/engineStore';
+import { SYMBOLS_13 } from '@/lib/constants';
 import type { SignalDetected } from '@/types/ipc-messages';
 
 const VOTE_COLOR = {
@@ -156,6 +157,9 @@ export default function DecisionTrace() {
   const signals = useEngineStore((s) => s.signals);
   const pushSignal = useEngineStore((s) => s.pushSignal);
   const [showDemo, setShowDemo] = useState(false);
+  const [filterSymbol, setFilterSymbol]    = useState('');
+  const [filterDir, setFilterDir]          = useState('');
+  const [filterMinConf, setFilterMinConf]  = useState(0);
 
   useEffect(() => {
     if (signals.length > 0) { setShowDemo(false); return; }
@@ -163,7 +167,14 @@ export default function DecisionTrace() {
     return () => clearTimeout(t);
   }, [signals.length]);
 
-  const items = signals.length > 0 ? signals : (showDemo ? DEMO_SIGNALS : []);
+  const baseItems = signals.length > 0 ? signals : (showDemo ? DEMO_SIGNALS : []);
+
+  const items = useMemo(() => baseItems.filter((s) => {
+    if (filterSymbol && s.symbol !== filterSymbol) return false;
+    if (filterDir && s.direction !== filterDir) return false;
+    if (filterMinConf > 0 && s.confluence < filterMinConf) return false;
+    return true;
+  }), [baseItems, filterSymbol, filterDir, filterMinConf]);
 
   return (
     <section data-testid="page-decision-trace" className="space-y-4 p-6">
@@ -174,7 +185,7 @@ export default function DecisionTrace() {
           kill-zone & news flags, and Claude's full reasoning.
         </p>
         <span className="ml-auto rounded bg-bg-tertiary px-2 py-1 font-mono text-xs text-white/60">
-          {items.length} recent
+          {items.length}/{baseItems.length}
         </span>
         {signals.length === 0 && showDemo && (
           <button
@@ -187,6 +198,53 @@ export default function DecisionTrace() {
           </button>
         )}
       </header>
+
+      {/* Filter bar */}
+      <div className="flex flex-wrap gap-2 rounded-lg border border-white/5 bg-bg-secondary p-3">
+        <select
+          value={filterSymbol}
+          onChange={(e) => setFilterSymbol(e.target.value)}
+          className="rounded bg-bg-tertiary px-2 py-1 font-mono text-xs text-white focus:outline-none focus:ring-1 focus:ring-accent-cyan"
+          data-testid="filter-symbol"
+        >
+          <option value="">All symbols</option>
+          {SYMBOLS_13.map(({ name }) => <option key={name} value={name}>{name}</option>)}
+        </select>
+
+        <select
+          value={filterDir}
+          onChange={(e) => setFilterDir(e.target.value)}
+          className="rounded bg-bg-tertiary px-2 py-1 text-xs text-white focus:outline-none focus:ring-1 focus:ring-accent-cyan"
+          data-testid="filter-direction"
+        >
+          <option value="">All directions</option>
+          <option value="BUY">BUY</option>
+          <option value="SELL">SELL</option>
+          <option value="HOLD">HOLD</option>
+        </select>
+
+        <select
+          value={filterMinConf}
+          onChange={(e) => setFilterMinConf(Number(e.target.value))}
+          className="rounded bg-bg-tertiary px-2 py-1 text-xs text-white focus:outline-none focus:ring-1 focus:ring-accent-cyan"
+          data-testid="filter-confluence"
+        >
+          <option value={0}>Any confluence</option>
+          <option value={3}>≥ 3/5</option>
+          <option value={4}>≥ 4/5</option>
+          <option value={5}>5/5 only</option>
+        </select>
+
+        {(filterSymbol || filterDir || filterMinConf > 0) && (
+          <button
+            type="button"
+            onClick={() => { setFilterSymbol(''); setFilterDir(''); setFilterMinConf(0); }}
+            className="rounded bg-white/5 px-2 py-1 text-[10px] text-white/50 hover:bg-white/10 hover:text-white"
+          >
+            Clear filters
+          </button>
+        )}
+      </div>
 
       {items.length === 0 ? (
         <div className="rounded-lg border border-white/5 bg-bg-secondary p-8 text-center text-sm text-white/40">

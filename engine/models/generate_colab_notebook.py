@@ -326,17 +326,22 @@ print("\\n👉 Place the downloaded .pt file in: engine/models/checkpoints/")
 """),
 ]
 
-nb = {
-    "nbformat": 4, "nbformat_minor": 0,
-    "metadata": {
-        "colab": {"provenance":[], "gpuType":"T4"},
-        "kernelspec": {"name":"python3","display_name":"Python 3"},
-        "accelerator": "GPU"
-    },
-    "cells": cells,
-}
+def main() -> int:
+    nb = {
+        "nbformat": 4, "nbformat_minor": 0,
+        "metadata": {
+            "colab": {"provenance": [], "gpuType": "T4"},
+            "kernelspec": {"name": "python3", "display_name": "Python 3"},
+            "accelerator": "GPU"
+        },
+        "cells": cells,
+    }
+    out = pathlib.Path(__file__).resolve().parent / "FXbot_Train_Colab.ipynb"
+    out.write_text(json.dumps(nb, indent=1), encoding="utf-8")
+    print(f"[OK] Notebook generated: {out}")
+    print("Upload this file to https://colab.research.google.com")
+    return 0
 
-out = pathlib.Path(__file__).resolve().parent / "FXbot_Train_Colab.ipynb"
-out.write_text(json.dumps(nb, indent=1), encoding="utf-8")
-print(f"[OK] Notebook generated: {out}")
-print("Upload this file to https://colab.research.google.com")
+
+if __name__ == "__main__":
+    raise SystemExit(main())

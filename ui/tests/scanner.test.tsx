@@ -31,7 +31,7 @@ describe('SignalScanner', () => {
       });
     });
     const row = screen.getByTestId('scanner-row-EURUSD#');
-    expect(row).toHaveTextContent('↑');
-    expect(row).toHaveTextContent('4');
+    expect(row).toHaveTextContent('BUY');
+    expect(row).toHaveTextContent('STRONG');
   });
 });

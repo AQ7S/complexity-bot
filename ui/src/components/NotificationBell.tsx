@@ -20,7 +20,7 @@ function timeAgo(ms: number): string {
   return `${Math.round(d / 3600_000)}h`;
 }
 
-export default function NotificationBell() {
+export default function NotificationBell({ dropdownClassName }: { dropdownClassName?: string }) {
   const notifications = useEngineStore((s) => s.notifications);
   const unread = useEngineStore((s) => s.notificationsUnread);
   const markRead = useEngineStore((s) => s.markNotificationsRead);
@@ -59,7 +59,7 @@ export default function NotificationBell() {
         )}
       </button>
       {open && (
-        <div className="absolute right-0 top-10 z-50 w-80 rounded-lg border border-white/10 bg-bg-secondary shadow-2xl">
+        <div className={`absolute z-50 w-80 rounded-lg border border-white/10 bg-bg-secondary shadow-2xl ${dropdownClassName ?? 'right-0 top-10'}`}>
           <div className="flex items-center justify-between border-b border-white/5 px-3 py-2">
             <span className="text-xs font-bold uppercase tracking-wider text-white/70">
               Notifications

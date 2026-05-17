@@ -90,6 +90,83 @@ CREATE TABLE IF NOT EXISTS price_alerts (
   enabled INTEGER DEFAULT 1,
   triggered_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS shadow_trades (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  entry_price REAL NOT NULL,
+  sl_price REAL NOT NULL,
+  tp_price REAL NOT NULL,
+  claude_decision TEXT,
+  claude_confidence INTEGER,
+  confluence_score INTEGER,
+  model_version TEXT,
+  bars_held INTEGER DEFAULT 0,
+  close_time TEXT,
+  exit_price REAL,
+  hypothetical_outcome TEXT,
+  pnl_r REAL,
+  pnl_usd REAL
+);
+CREATE INDEX IF NOT EXISTS idx_shadow_open ON shadow_trades(hypothetical_outcome);
+
+CREATE TABLE IF NOT EXISTS calibration_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp TEXT NOT NULL,
+  ece_score REAL NOT NULL,
+  n_trades INTEGER NOT NULL,
+  bin_data_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_calibration_ts ON calibration_history(timestamp DESC);
+
+CREATE TABLE IF NOT EXISTS signal_features (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  trade_id INTEGER,
+  shadow_id INTEGER,
+  ts TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  features_json TEXT NOT NULL,
+  FOREIGN KEY(trade_id) REFERENCES trades(id),
+  FOREIGN KEY(shadow_id) REFERENCES shadow_trades(id)
+);
+CREATE INDEX IF NOT EXISTS idx_signal_features_trade ON signal_features(trade_id);
+CREATE INDEX IF NOT EXISTS idx_signal_features_shadow ON signal_features(shadow_id);
+
+CREATE TABLE IF NOT EXISTS trade_excursions (
+  trade_id INTEGER PRIMARY KEY,
+  max_mae_pips REAL,
+  max_mfe_pips REAL,
+  time_to_mae_s INTEGER,
+  time_to_mfe_s INTEGER,
+  FOREIGN KEY(trade_id) REFERENCES trades(id)
+);
+
+CREATE TABLE IF NOT EXISTS claude_overrides (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  param TEXT NOT NULL,
+  old_value TEXT,
+  new_value TEXT NOT NULL,
+  rationale TEXT,
+  expires_at TEXT,
+  active INTEGER DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_overrides_active ON claude_overrides(active, ts DESC);
+
+CREATE TABLE IF NOT EXISTS strategy_pnl (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  strategy TEXT NOT NULL,
+  trades INTEGER DEFAULT 0,
+  wins INTEGER DEFAULT 0,
+  losses INTEGER DEFAULT 0,
+  pnl_usd REAL DEFAULT 0,
+  pnl_r REAL DEFAULT 0,
+  notes TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_pnl ON strategy_pnl(strategy, ts DESC);
 """
 
 

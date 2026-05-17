@@ -12,7 +12,9 @@ import DecisionTrace from '@/pages/DecisionTrace';
 import SpreadMonitor from '@/pages/SpreadMonitor';
 import SessionPnLHeatmap from '@/pages/SessionPnLHeatmap';
 import BacktestRunner from '@/pages/BacktestRunner';
+import Strategies from '@/pages/Strategies';
 import { useEngineSocket, sendCommand } from '@/hooks/useEngineSocket';
+import { useEngineStore } from '@/store/engineStore';
 
 const NAV_KEYS: Record<string, string> = {
   '1': '/',
@@ -26,6 +28,32 @@ const NAV_KEYS: Record<string, string> = {
   '9': '/backtest',
   '0': '/settings',
 };
+
+function NewsWarningBanner() {
+  const warn = useEngineStore((s) => s.newsWarning);
+  const dismiss = useEngineStore((s) => s.dismissNewsWarning);
+  if (!warn) return null;
+  const impactColor =
+    warn.impact === 'HIGH'   ? 'border-accent-red/60 bg-accent-red/10 text-accent-red' :
+    warn.impact === 'MEDIUM' ? 'border-accent-gold/60 bg-accent-gold/10 text-accent-gold' :
+                               'border-white/20 bg-white/5 text-white/70';
+  return (
+    <div className={`flex items-center gap-3 border-b px-4 py-2 text-xs font-mono ${impactColor}`}
+         data-testid="news-warning-banner">
+      <span className="shrink-0 font-bold">📰 NEWS {warn.impact}</span>
+      <span className="flex-1 truncate">
+        {warn.event_name} ({warn.currency}) — {warn.time_until_minutes}m away
+        {warn.affected_symbols?.length
+          ? ` · ${warn.affected_symbols.slice(0, 4).join(', ')}`
+          : ''}
+      </span>
+      <button type="button" onClick={dismiss}
+              className="shrink-0 rounded px-2 py-0.5 text-[10px] opacity-60 hover:opacity-100 hover:bg-white/10">
+        ✕
+      </button>
+    </div>
+  );
+}
 
 function Shell() {
   useEngineSocket();
@@ -75,11 +103,14 @@ function Shell() {
   }, [handleKey]);
 
   return (
-    <div className="flex h-screen w-screen bg-bg-primary text-white">
-      <Sidebar />
-      <main className="flex-1 overflow-auto">
-        <Outlet />
-      </main>
+    <div className="flex h-screen w-screen flex-col bg-bg-primary text-white">
+      <NewsWarningBanner />
+      <div className="flex flex-1 overflow-hidden">
+        <Sidebar />
+        <main className="flex-1 overflow-auto">
+          <Outlet />
+        </main>
+      </div>
       <PositionSizeCalc />
       {/* Emergency confirmation toast */}
       {confirmEmergency && (
@@ -103,8 +134,9 @@ const ROUTES = [
       { path: '/trace',    element: <DecisionTrace /> },
       { path: '/spread',   element: <SpreadMonitor /> },
       { path: '/heatmap',  element: <SessionPnLHeatmap /> },
-      { path: '/backtest', element: <BacktestRunner /> },
-      { path: '/settings', element: <Settings /> },
+      { path: '/backtest',   element: <BacktestRunner /> },
+      { path: '/strategies', element: <Strategies /> },
+      { path: '/settings',   element: <Settings /> },
     ],
   },
 ];

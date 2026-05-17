@@ -38,11 +38,31 @@ class Prediction:
     probs: dict[str, float]
 
 
+MIN_VALID_CHECKPOINT_BYTES = 1024
+
+
+def _checkpoint_is_loadable(path: Path) -> bool:
+    try:
+        if path.stat().st_size < MIN_VALID_CHECKPOINT_BYTES:
+            return False
+        torch.load(path, map_location="cpu", weights_only=False)
+        return True
+    except Exception:
+        return False
+
+
 def latest_checkpoint(model_name: str = "cnn_lstm") -> Path | None:
     if not CHECKPOINT_DIR.exists():
         return None
-    candidates = sorted(CHECKPOINT_DIR.glob(f"{model_name}_v*.pt"), key=lambda p: p.stat().st_mtime)
-    return candidates[-1] if candidates else None
+    candidates = sorted(
+        CHECKPOINT_DIR.glob(f"{model_name}_v*.pt"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for candidate in candidates:
+        if _checkpoint_is_loadable(candidate):
+            return candidate
+    return None
 
 
 class CNNLSTMInferencer:

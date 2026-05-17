@@ -125,3 +125,113 @@ export type TradeRow = {
 export type TradesSnapshot = { trades: TradeRow[] };
 export type SettingsSnapshot = { values: Record<string, string> };
 
+export type NewsWarning = {
+  event_name: string;
+  currency: string;
+  impact: 'LOW' | 'MEDIUM' | 'HIGH';
+  time_until_minutes: number;
+  affected_symbols?: string[];
+};
+
+export type WeeklyDebrief = {
+  week_start: string;
+  markdown: string;
+  param_recommendations?: Record<string, unknown> | null;
+  trades_count?: number | null;
+  net_pnl?: number | null;
+  win_rate?: number | null;
+};
+
+export type MacroSnapshot = {
+  yield_curve_bias: 'USD_BULLISH' | 'USD_BEARISH' | 'NEUTRAL';
+  crypto_fear_greed: 'EXTREME_FEAR' | 'FEAR' | 'NEUTRAL' | 'GREED' | 'EXTREME_GREED';
+  fear_greed_value?: number | null;
+  spread_us10y_us2y?: number | null;
+};
+
+export type ShadowStatus = {
+  active: boolean;
+  total: number;
+  open_count: number;
+  closed_count: number;
+  wins: number;
+  losses: number;
+  time_exits: number;
+  win_rate: number;
+  avg_r: number;
+  sharpe: number;
+  cumulative_pnl_r: number;
+};
+
+export type ModelPromotionReady = {
+  current_model_sharpe?: number | null;
+  shadow_sharpe: number;
+  shadow_win_rate: number;
+  shadow_trades: number;
+  avg_r: number;
+};
+
+export type CalibrationBin = {
+  bin_start: number;
+  bin_end: number;
+  n: number;
+  avg_confidence: number;
+  win_rate: number;
+};
+
+export type CalibrationUpdate = {
+  ece_score: number;
+  n_trades: number;
+  bins: CalibrationBin[];
+  overconfident: boolean;
+};
+
+export type BacktestResult = {
+  symbol: string;
+  timeframe: string;
+  from_date: string;
+  to_date: string;
+  total_trades: number;
+  wins: number;
+  losses: number;
+  win_rate: number;
+  net_pnl_usd: number;
+  avg_r_multiple: number;
+  sharpe: number;
+  profit_factor: number;
+  max_drawdown_pct: number;
+  spread_pips_used: number;
+  slippage_pips_used: number;
+  swap_long_pips_used: number;
+  swap_short_pips_used: number;
+  starting_equity: number;
+  ending_equity: number;
+  error?: string | null;
+};
+
+export type Ack = {
+  ref_type: string;
+  ok: boolean;
+  error?: string | null;
+};
+
+export type StrategyMode = 'ON' | 'SHADOW' | 'OFF';
+export type StrategyState = 'ACTIVE' | 'PAUSED' | 'SHADOW' | 'DISABLED';
+
+export type StrategyHealthFrame = {
+  name: string;
+  style: string;
+  state: StrategyState;
+  weight: number;
+  rolling_sharpe: number;
+  consecutive_losses: number;
+  trades_today: number;
+  pnl_today_usd: number;
+  paused_until_ts: number;
+  shadow_only_until_ts: number;
+};
+
+export type StrategyStatus = {
+  total_risk_pct: number;
+  strategies: StrategyHealthFrame[];
+};

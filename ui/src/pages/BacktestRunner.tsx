@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, CartesianGrid } from 'recharts';
 import { sendCommand } from '@/hooks/useEngineSocket';
 import { SYMBOLS_13, TIMEFRAMES } from '@/lib/constants';
+import { useEngineStore } from '@/store/engineStore';
 
 type BacktestResult = {
   equity_curve: { ts: number; equity: number; drawdown_pct: number }[];
@@ -26,6 +27,31 @@ export default function BacktestRunner() {
   const [running, setRunning]   = useState(false);
   const [result, setResult]     = useState<BacktestResult | null>(null);
   const [error, setError]       = useState<string | null>(null);
+  const liveResult = useEngineStore((s) => s.lastBacktestResult);
+
+  useEffect(() => {
+    if (!liveResult) return;
+    setRunning(false);
+    if (liveResult.error) {
+      setError(liveResult.error);
+      return;
+    }
+    setError(null);
+    setResult({
+      equity_curve: [],
+      trades: [],
+      summary: {
+        total_trades: liveResult.total_trades,
+        wins: liveResult.wins,
+        losses: liveResult.losses,
+        win_rate: liveResult.win_rate,
+        net_pnl: liveResult.net_pnl_usd,
+        max_drawdown_pct: liveResult.max_drawdown_pct / 100,
+        sharpe: liveResult.sharpe,
+        avg_rr: liveResult.avg_r_multiple,
+      },
+    });
+  }, [liveResult]);
 
   async function runBacktest() {
     setRunning(true);
@@ -39,7 +65,7 @@ export default function BacktestRunner() {
       strategy_config: {
         timeframe: tf,
         risk_pct: parseFloat(riskPct),
-        consensus_min: parseInt(minConf, 10),
+        min_confluence: parseInt(minConf, 10),
       },
     });
 
@@ -49,14 +75,15 @@ export default function BacktestRunner() {
       return;
     }
 
-    // Engine sends result back via a future IPC frame (not yet wired).
-    // For now, show a pending message and stop spinner after 30s timeout.
     setTimeout(() => {
-      if (running) {
-        setError('Backtest timed out. Engine may still be processing — check logs.');
-        setRunning(false);
-      }
-    }, 30_000);
+      setRunning((wasRunning) => {
+        if (wasRunning) {
+          setError('Backtest timed out. Engine may still be processing — check logs.');
+          return false;
+        }
+        return wasRunning;
+      });
+    }, 120_000);
   }
 
   const curve = result?.equity_curve ?? [];
@@ -167,6 +194,22 @@ export default function BacktestRunner() {
           {error && <span className="text-xs text-accent-red">{error}</span>}
         </div>
       </div>
+
+      {/* Cost transparency banner */}
+      {liveResult && !liveResult.error && (
+        <div className="mb-3 rounded-lg border border-accent-cyan/30 bg-bg-secondary p-3 text-xs text-white/70">
+          <span className="mr-3 font-bold uppercase tracking-wider text-accent-cyan">Costs applied</span>
+          spread {liveResult.spread_pips_used.toFixed(2)} pips ·
+          slippage {liveResult.slippage_pips_used.toFixed(2)} pips ·
+          swap long {liveResult.swap_long_pips_used.toFixed(2)} pips/night ·
+          swap short {liveResult.swap_short_pips_used.toFixed(2)} pips/night
+          {liveResult.sharpe < 0.5 && (
+            <span className="ml-3 rounded bg-accent-red/30 px-2 py-0.5 text-[10px] font-bold uppercase text-accent-red">
+              Sharpe {liveResult.sharpe.toFixed(2)} &lt; 0.5 — edge insufficient
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Results */}
       {result ? (

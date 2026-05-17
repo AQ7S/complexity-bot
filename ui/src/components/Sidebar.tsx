@@ -1,5 +1,8 @@
 import { NavLink } from 'react-router-dom';
-import { Activity, BarChart3, BookOpen, Brain, Settings as Cog, Radar, Workflow, Gauge, Grid3X3, FlaskConical } from 'lucide-react';
+import { Activity, BarChart3, BookOpen, Brain, Settings as Cog, Radar, Workflow, Gauge, Grid3X3, FlaskConical, Layers } from 'lucide-react';
+import { useEngineStore } from '@/store/engineStore';
+import { fmtUsd } from '@/lib/format';
+import NotificationBell from './NotificationBell';
 
 const ROUTES = [
   { to: '/',          label: 'Command',  icon: Activity },
@@ -10,9 +13,39 @@ const ROUTES = [
   { to: '/ai',        label: 'AI',       icon: Brain },
   { to: '/spread',    label: 'Spreads',  icon: Gauge },
   { to: '/heatmap',   label: 'Heatmap',  icon: Grid3X3 },
-  { to: '/backtest',  label: 'Backtest', icon: FlaskConical },
-  { to: '/settings',  label: 'Settings', icon: Cog },
+  { to: '/backtest',    label: 'Backtest',  icon: FlaskConical },
+  { to: '/strategies',  label: 'Strategies', icon: Layers },
+  { to: '/settings',    label: 'Settings',  icon: Cog },
 ] as const;
+
+function SidebarFooter() {
+  const status = useEngineStore((s) => s.engineStatus);
+  const wsConnected = useEngineStore((s) => s.wsConnected);
+  const account = useEngineStore((s) => s.account);
+
+  const live = status?.status === 'LIVE';
+  const error = status?.status === 'ERROR' || !wsConnected;
+  const starting = !status || status.status === 'STARTING';
+  const dot = error ? 'bg-accent-red' : starting ? 'bg-accent-gold' : live ? 'bg-accent-green' : 'bg-white/40';
+
+  return (
+    <div className="mt-auto border-t border-white/5 pt-2">
+      {account && (
+        <div className="mb-1 px-3 py-1">
+          <p className="text-[9px] uppercase tracking-wider text-white/40">Equity</p>
+          <p className="font-mono text-xs text-accent-green">{fmtUsd(account.equity)}</p>
+        </div>
+      )}
+      <div className="flex items-center gap-2 px-2 py-1.5">
+        <span className={`h-2 w-2 shrink-0 rounded-full ${dot}`} />
+        <span className="flex-1 truncate text-[10px] uppercase tracking-wider text-white/50">
+          {status?.status ?? 'STARTING'}
+        </span>
+        <NotificationBell dropdownClassName="left-full ml-2 bottom-0" />
+      </div>
+    </div>
+  );
+}
 
 export default function Sidebar() {
   return (
@@ -37,6 +70,7 @@ export default function Sidebar() {
           <span>{label}</span>
         </NavLink>
       ))}
+      <SidebarFooter />
     </nav>
   );
 }

@@ -96,6 +96,39 @@ export default function Settings() {
         </span>}
       </section>
 
+      <section
+        data-testid="settings-shadow-mode"
+        className="rounded-lg border border-accent-purple/30 bg-bg-secondary p-4"
+      >
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="text-sm font-bold uppercase tracking-wider text-accent-purple">
+            Shadow Mode (paper trading)
+          </h2>
+          <span className="text-[10px] uppercase tracking-wider text-white/40">
+            Default: ON
+          </span>
+        </div>
+        <p className="mb-3 text-xs text-white/70">
+          When enabled, the engine runs the full signal pipeline + Claude Gate but never
+          calls mt5.order_send. Every shadow signal is logged to <code>shadow_trades</code> in
+          SQLite and a hypothetical outcome (WIN / LOSS / TIME_EXIT) is decided against live
+          ticks. Promote a candidate only after ≥100 closed shadow trades with WR ≥ 50%.
+        </p>
+        <label className="flex items-center gap-2 text-xs">
+          <input
+            type="checkbox"
+            checked={(draft.SHADOW_MODE ?? 'true') === 'true'}
+            onChange={(e) => set('SHADOW_MODE', e.target.checked ? 'true' : 'false')}
+            data-testid="toggle-shadow-mode"
+          />
+          <span className="text-white/80">Shadow mode active (no real orders)</span>
+        </label>
+        <p className="mt-2 text-[11px] text-white/40">
+          Restart engine after toggling. Live trading should stay OFF until shadow Sharpe
+          is durably above current production Sharpe × 1.10.
+        </p>
+      </section>
+
       <section className="rounded-lg border border-white/5 bg-bg-secondary p-4">
         <h2 className="mb-3 text-sm font-bold uppercase tracking-wider text-white/70">Notifications</h2>
         <div className="flex flex-wrap gap-4 text-xs">

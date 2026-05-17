@@ -10,6 +10,7 @@ describe('routing', () => {
     ['/ai',       'page-ai-engine'],
     ['/settings', 'page-settings'],
     ['/trace',    'page-decision-trace'],
+    ['/strategies', 'page-strategies'],
   ])('mounts %s', (path, testid) => {
     render(<TestRouter initialPath={path} />);
     expect(screen.getByTestId(testid)).toBeInTheDocument();

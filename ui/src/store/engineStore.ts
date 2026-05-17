@@ -1,8 +1,10 @@
 import { create } from 'zustand';
 import type {
   AccountUpdate, ClaudeFeed, CorrelationUpdate, EngineStatus, ModelUpdate,
-  Notification, RegimeChange, SignalDetected, TickUpdate, TradeClosed, TradeOpened,
-  TradeRow, TradeUpdated, WSStatus,
+  NewsWarning, Notification, RegimeChange, SignalDetected, TickUpdate,
+  TradeClosed, TradeOpened, TradeRow, TradeUpdated, WeeklyDebrief, WSStatus,
+  ShadowStatus, ModelPromotionReady, CalibrationUpdate, BacktestResult,
+  StrategyStatus,
 } from '@/types/ipc-messages';
 
 export type OpenPosition = TradeOpened & {
@@ -58,6 +60,13 @@ type State = {
   modelUpdates: Record<'cnn_lstm' | 'rl_dqn', ModelUpdate | null>;
   notifications: NotificationLogEntry[];
   notificationsUnread: number;
+  newsWarning: NewsWarning | null;
+  weeklyDebrief: WeeklyDebrief | null;
+  shadowStatus: ShadowStatus | null;
+  promotionReady: ModelPromotionReady | null;
+  calibration: CalibrationUpdate | null;
+  lastBacktestResult: BacktestResult | null;
+  strategyStatus: StrategyStatus | null;
 
   setWS: (s: WSStatus) => void;
   setEngineStatus: (s: EngineStatus) => void;
@@ -76,6 +85,14 @@ type State = {
   pushNotification: (n: Notification) => void;
   markNotificationsRead: () => void;
   clearNotifications: () => void;
+  setNewsWarning: (w: NewsWarning) => void;
+  dismissNewsWarning: () => void;
+  setWeeklyDebrief: (d: WeeklyDebrief) => void;
+  setShadowStatus: (s: ShadowStatus) => void;
+  setPromotionReady: (p: ModelPromotionReady) => void;
+  setCalibration: (c: CalibrationUpdate) => void;
+  setBacktestResult: (r: BacktestResult) => void;
+  setStrategyStatus: (s: StrategyStatus) => void;
 };
 
 function todayKeyEST(ts: number): string {
@@ -110,6 +127,13 @@ export const useEngineStore = create<State>((set) => ({
   modelUpdates: { cnn_lstm: null, rl_dqn: null },
   notifications: [],
   notificationsUnread: 0,
+  newsWarning: null,
+  weeklyDebrief: null,
+  shadowStatus: null,
+  promotionReady: null,
+  calibration: null,
+  lastBacktestResult: null,
+  strategyStatus: null,
 
   setWS: (s) => set({ wsConnected: s.connected }),
   setEngineStatus: (s) => set({ engineStatus: s }),
@@ -213,6 +237,14 @@ export const useEngineStore = create<State>((set) => ({
     notificationsUnread: 0,
   })),
   clearNotifications: () => set({ notifications: [], notificationsUnread: 0 }),
+  setNewsWarning: (w) => set({ newsWarning: w }),
+  dismissNewsWarning: () => set({ newsWarning: null }),
+  setWeeklyDebrief: (d) => set({ weeklyDebrief: d }),
+  setShadowStatus: (s) => set({ shadowStatus: s }),
+  setPromotionReady: (p) => set({ promotionReady: p }),
+  setCalibration: (c) => set({ calibration: c }),
+  setBacktestResult: (r) => set({ lastBacktestResult: r }),
+  setStrategyStatus: (s) => set({ strategyStatus: s }),
 }));
 
 void SPREAD_HISTORY_MAX;

@@ -124,7 +124,39 @@ def _build_request(req: OrderRequest) -> dict:
 
 
 def send_order(req: OrderRequest) -> OrderResult:
-    """Dispatch an order via mt5.order_send. Logs the trade on success."""
+    """Dispatch an order via mt5.order_send. Logs the trade on success.
+
+    When `settings.SHADOW_MODE` is true, the call is intercepted: nothing is
+    sent to MT5, a row is written to the `shadow_trades` SQLite table, and an
+    `OrderResult(ok=True, ticket=-1)` is returned so callers see a successful
+    placement.
+    """
+    if settings.shadow_mode_active():
+        from datetime import datetime, timezone
+        from engine.execution.shadow_trader import (
+            ShadowSignal, record_shadow_trade,
+        )
+        try:
+            tick = mt5.symbol_info_tick(req.symbol)
+            entry = float(tick.ask if req.direction == "BUY" else tick.bid)
+        except Exception:
+            entry = float(req.sl + (req.tp - req.sl) * 0.5)
+        shadow_id = record_shadow_trade(ShadowSignal(
+            timestamp=datetime.now(timezone.utc),
+            symbol=req.symbol, direction=req.direction,
+            entry_price=entry, sl_price=float(req.sl), tp_price=float(req.tp),
+            confluence_score=int(getattr(req, "confluence", 0) or 0),
+            claude_decision=getattr(req, "claude_decision", None),
+            claude_confidence=getattr(req, "claude_confidence", None),
+            model_version=getattr(req, "model_version", None),
+        ))
+        logger.info(
+            "SHADOW: {} {} lot={} entry={} sl={} tp={} (id={})",
+            req.direction, req.symbol, req.lot, entry, req.sl, req.tp, shadow_id,
+        )
+        return OrderResult(ok=True, ticket=-shadow_id, retcode=0,
+                           comment=f"shadow:{shadow_id}", request=req)
+
     if not mt5.symbol_info(req.symbol).visible:
         mt5.symbol_select(req.symbol, True)
     payload = _build_request(req)
@@ -199,6 +231,10 @@ def close_position(ticket: int, *, reason: str = "MANUAL") -> bool:
                 (price, pnl, _now_iso(), reason, int(pos.ticket)),
             )
             con.commit()
+        try:
+            _append_to_replay_buffer(pos, exit_price=price, pnl=pnl)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("replay_buffer append failed: {}", e)
     else:
         logger.warning("close_position {} failed: {}", ticket,
                        getattr(res, "comment", mt5.last_error()))
@@ -217,3 +253,55 @@ def close_all(*, reason: str = "MANUAL") -> dict[str, int]:
             failed += 1
     logger.info("close_all reason={}: closed={} failed={}", reason, closed, failed)
     return {"closed": closed, "failed": failed, "total": len(positions)}
+
+
+_REPLAY_BUFFER = None
+_REPLAY_PERSIST_PATH = None
+
+
+def _get_replay_buffer():
+    """Singleton ExperienceReplay (lazy import to keep test isolation)."""
+    global _REPLAY_BUFFER, _REPLAY_PERSIST_PATH
+    if _REPLAY_BUFFER is None:
+        from pathlib import Path
+        from engine.models.replay_buffer import ExperienceReplay
+        _REPLAY_BUFFER = ExperienceReplay(capacity=10_000)
+        _REPLAY_PERSIST_PATH = Path(settings.SQLITE_PATH).parent / "replay_buffer.json"
+        _REPLAY_BUFFER.load(_REPLAY_PERSIST_PATH)
+        logger.info("replay buffer initialized: {} entries loaded from {}",
+                    len(_REPLAY_BUFFER), _REPLAY_PERSIST_PATH)
+    return _REPLAY_BUFFER
+
+
+def _append_to_replay_buffer(pos, *, exit_price: float, pnl: float) -> None:
+    """Append a closed-position outcome to the experience replay ring."""
+    from datetime import datetime, timezone
+    from engine.models.replay_buffer import TradeExperience
+    is_buy = pos.type == mt5.POSITION_TYPE_BUY
+    label = 0 if is_buy else 1
+    confluence = 0
+    regime = "UNKNOWN"
+    try:
+        with open_journal() as con:
+            row = con.execute(
+                "SELECT signal_confluence FROM trades WHERE mt5_ticket = ?",
+                (int(pos.ticket),),
+            ).fetchone()
+            if row and row["signal_confluence"] is not None:
+                confluence = int(row["signal_confluence"])
+    except Exception:
+        pass
+    exp = TradeExperience(
+        symbol=pos.symbol,
+        timeframe="M5",
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        features=[float(pos.price_open), float(exit_price), float(pos.volume)],
+        label=label, pnl=float(pnl), confluence=confluence, regime=regime,
+    )
+    buf = _get_replay_buffer()
+    buf.add(exp)
+    try:
+        if _REPLAY_PERSIST_PATH is not None and len(buf) % 10 == 0:
+            buf.save(_REPLAY_PERSIST_PATH)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("replay buffer save failed: {}", e)

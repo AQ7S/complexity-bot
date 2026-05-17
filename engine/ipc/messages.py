@@ -228,6 +228,90 @@ class Ack(BaseModel):
     error: str | None = None
 
 
+class MacroSnapshot(BaseModel):
+    yield_curve_bias: Literal["USD_BULLISH", "USD_BEARISH", "NEUTRAL"]
+    crypto_fear_greed: Literal["EXTREME_FEAR", "FEAR", "NEUTRAL", "GREED", "EXTREME_GREED"]
+    fear_greed_value: int | None = None
+    spread_us10y_us2y: float | None = None
+
+
+class ShadowStatus(BaseModel):
+    active: bool
+    total: int
+    open_count: int
+    closed_count: int
+    wins: int
+    losses: int
+    time_exits: int
+    win_rate: float
+    avg_r: float
+    sharpe: float
+    cumulative_pnl_r: float
+
+
+class ModelPromotionReady(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    current_model_sharpe: float | None = None
+    shadow_sharpe: float
+    shadow_win_rate: float
+    shadow_trades: int
+    avg_r: float
+
+
+class CalibrationUpdate(BaseModel):
+    ece_score: float
+    n_trades: int
+    bins: list[dict[str, float]]
+    overconfident: bool
+
+
+class StrategyHealthFrame(BaseModel):
+    name: str
+    style: str
+    state: Literal["ACTIVE", "PAUSED", "SHADOW", "DISABLED"]
+    weight: float = Field(ge=0.0, le=1.0)
+    rolling_sharpe: float
+    consecutive_losses: int
+    trades_today: int
+    pnl_today_usd: float
+    paused_until_ts: int = 0
+    shadow_only_until_ts: int = 0
+
+
+class StrategyStatus(BaseModel):
+    total_risk_pct: float
+    strategies: list[StrategyHealthFrame]
+
+
+class CmdStrategyToggle(BaseModel):
+    """Set a strategy's operating mode: ON, SHADOW (signal-only), or OFF."""
+    name: str
+    mode: Literal["ON", "SHADOW", "OFF"]
+
+
+class BacktestResult(BaseModel):
+    symbol: str
+    timeframe: str
+    from_date: str
+    to_date: str
+    total_trades: int
+    wins: int
+    losses: int
+    win_rate: float
+    net_pnl_usd: float
+    avg_r_multiple: float
+    sharpe: float
+    profit_factor: float
+    max_drawdown_pct: float
+    spread_pips_used: float
+    slippage_pips_used: float
+    swap_long_pips_used: float
+    swap_short_pips_used: float
+    starting_equity: float
+    ending_equity: float
+    error: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Type registry — single source of truth for (type_string → model class)
 # ---------------------------------------------------------------------------
@@ -259,13 +343,20 @@ PAYLOAD_TYPES: dict[str, type[BaseModel]] = {
     "cmd_get_settings":     CmdGetSettings,
     "trades_snapshot":      TradesSnapshot,
     "settings_snapshot":    SettingsSnapshot,
+    "macro_snapshot":       MacroSnapshot,
+    "shadow_status":        ShadowStatus,
+    "model_promotion_ready": ModelPromotionReady,
+    "calibration_update":   CalibrationUpdate,
+    "backtest_result":      BacktestResult,
+    "strategy_status":      StrategyStatus,
+    "cmd_strategy_toggle":  CmdStrategyToggle,
     "ack":                  Ack,
 }
 
 COMMAND_TYPES = frozenset({
     "cmd_emergency_close", "cmd_pause", "cmd_manual_retrain",
     "cmd_settings_update", "cmd_run_backtest", "cmd_set_alert",
-    "cmd_get_trades", "cmd_get_settings",
+    "cmd_get_trades", "cmd_get_settings", "cmd_strategy_toggle",
 })
 
 
