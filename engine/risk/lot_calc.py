@@ -77,6 +77,18 @@ def compute_lot(
             reason="INVALID_SL_DISTANCE",
         )
 
+    fixed_lot = float(getattr(settings, "FIXED_LOT", 0.0) or 0.0)
+    if fixed_lot > 0:
+        quant = _quantize(fixed_lot, symbol.volume_step)
+        lot = max(symbol.volume_min, min(quant, symbol.volume_max))
+        ticks_to_sl_fixed = sl_distance / symbol.tick_size
+        loss_per_lot_fixed = ticks_to_sl_fixed * symbol.tick_value
+        return LotResult(
+            ok=True, lot=lot, raw_lot=fixed_lot, risk_usd=lot * loss_per_lot_fixed,
+            loss_per_lot=loss_per_lot_fixed, sl_distance=sl_distance,
+            reason="OK", warnings=(f"FIXED_LOT={fixed_lot} override active",),
+        )
+
     ticks_to_sl = sl_distance / symbol.tick_size
     loss_per_lot = ticks_to_sl * symbol.tick_value
     if loss_per_lot <= 0:

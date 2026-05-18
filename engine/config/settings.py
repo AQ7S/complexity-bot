@@ -62,10 +62,17 @@ LOG_LEVEL: str = os.environ.get("LOG_LEVEL", "INFO")
 LOG_DIR: str = os.environ.get("LOG_DIR", str(_USER_DATA_DIR / "logs"))
 Path(LOG_DIR).mkdir(parents=True, exist_ok=True)
 
-# --- Hardcoded risk constants (§4) ------------------------------------------
-RISK_PCT_PER_TRADE = 0.02
-INTRADAY_KILL_PCT = 0.03
-WEEKLY_KILL_PCT = 0.08
+# --- Risk constants (§4) ----------------------------------------------------
+# RISK_PCT_PER_TRADE is overridable via env for small-account testing.
+# Operator must set RISK_PCT_PER_TRADE=0.02 once balance exceeds ~$500.
+RISK_PCT_PER_TRADE = float(os.environ.get("RISK_PCT_PER_TRADE", "0.02"))
+INTRADAY_KILL_PCT = float(os.environ.get("INTRADAY_KILL_PCT", "0.03"))
+WEEKLY_KILL_PCT = float(os.environ.get("WEEKLY_KILL_PCT", "0.08"))
+# FIXED_LOT: when > 0, override the Kelly/risk-based sizing and force every
+# trade to use this lot value (quantised to volume_step, clipped to broker
+# min/max). Designed for small-account testing where the 2% rule produces
+# raw_lot < volume_min. Set FIXED_LOT=0 (default) to use the normal formula.
+FIXED_LOT = float(os.environ.get("FIXED_LOT", "0"))
 MAX_CONCURRENT_POSITIONS = 5
 MAX_CORRELATED_POSITIONS = 2
 CORRELATION_THRESHOLD = 0.80

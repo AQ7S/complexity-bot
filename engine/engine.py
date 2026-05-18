@@ -272,6 +272,312 @@ async def _make_command_handler(state: EngineState):
     return handle
 
 
+async def _signal_scanner_loop(state: EngineState, interval_s: float = 30.0) -> None:
+    """Elite live signal generation — Tier A + B + C gates wired in.
+
+    Per `interval_s`:
+      * pull bars for each watchlist symbol × strategy timeframe
+      * compute regime + H4 bias + live spread vs profile + news gate
+      * run orchestrator.tick → strategy signals
+      * for each signal: risk preconditions → Claude gate → lot size → fire
+    """
+    import numpy as np  # noqa: PLC0415
+    import pandas as pd  # noqa: PLC0415
+    from datetime import datetime as _datetime, timezone as _tz  # noqa: PLC0415
+    from engine.config.symbols import SYMBOLS_13
+    from engine.execution.order_router import OrderRequest, send_order, size_lot_for
+    from engine.ipc.broadcaster import BUS
+    from engine.ipc.messages import Notification, SignalDetected
+    from engine.strategy import orchestrator_runtime
+    from engine.strategy.base import StrategyContext
+    from engine.strategy.claude_gate import gate_factory
+    from engine.utils.time_utils import kill_zone_active
+
+    try:
+        import MetaTrader5 as mt5  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        logger.warning("signal_scanner: MetaTrader5 unavailable — loop disabled")
+        return
+
+    claude_call = gate_factory() if settings.ENABLE_CLAUDE_GATE else None
+    TF_MINUTES = {"M1": 1, "M5": 5, "M15": 15, "H1": 60, "H4": 240, "D1": 1440}
+    TF_TO_MT5 = {
+        "M1": mt5.TIMEFRAME_M1, "M5": mt5.TIMEFRAME_M5,
+        "M15": mt5.TIMEFRAME_M15, "H1": mt5.TIMEFRAME_H1,
+        "H4": mt5.TIMEFRAME_H4, "D1": mt5.TIMEFRAME_D1,
+    }
+
+    def _pull_bars(symbol: str, tf_key: str, n: int = 300) -> "pd.DataFrame | None":
+        rates = mt5.copy_rates_from_pos(symbol, TF_TO_MT5[tf_key], 0, n)
+        if rates is None or len(rates) == 0:
+            return None
+        df = pd.DataFrame(rates)
+        df["ts"] = pd.to_datetime(df["time"], unit="s", utc=True)
+        df = df.rename(columns={"tick_volume": "volume"})
+        return df.set_index("ts")[["open", "high", "low", "close", "volume"]]
+
+    # ------- Tier A helpers (cached, lazy-loaded) ----------------------------
+    def _classify_regime(df: "pd.DataFrame") -> str | None:
+        try:
+            from engine.features.regime import classify  # noqa: PLC0415
+            return classify(df).regime
+        except Exception:
+            return None
+
+    def _h4_bias_for(symbol: str) -> str:
+        try:
+            from engine.features.smc import _h4_bias  # noqa: PLC0415
+            h4 = _pull_bars(symbol, "H4", n=200)
+            return _h4_bias(h4) if h4 is not None else "RANGING"
+        except Exception:
+            return "RANGING"
+
+    _spread_profiles: dict[str, object] = {}
+    def _spread_ok(symbol: str, current_spread: float) -> bool:
+        try:
+            from engine.risk.spread_profile import (  # noqa: PLC0415
+                load_hourly_profile_from_duckdb, is_spread_acceptable,
+            )
+            prof = _spread_profiles.get(symbol)
+            if prof is None:
+                prof = load_hourly_profile_from_duckdb(symbol=symbol)
+                _spread_profiles[symbol] = prof
+            return is_spread_acceptable(prof, current_spread)
+        except Exception:
+            return True
+
+    def _news_clear_for(symbol: str) -> bool:
+        try:
+            from engine.news.jblanked import hours_until_high_impact  # noqa: PLC0415
+            ccy_base = symbol[:3].upper()
+            ccy_quote = symbol[3:6].upper() if len(symbol) >= 6 else ""
+            for c in (ccy_base, ccy_quote):
+                if not c or not c.isalpha():
+                    continue
+                h = hours_until_high_impact(currency=c)
+                if h is not None and h * 60 <= settings.NEWS_PAUSE_MINUTES_BEFORE:
+                    return False
+            return True
+        except Exception:
+            return True
+
+    def _vpin_for(symbol: str) -> float:
+        try:
+            from engine.features.vpin import compute_vpin  # noqa: PLC0415
+            ticks = mt5.copy_ticks_from_pos(symbol, 0, 1000)
+            if ticks is None or len(ticks) == 0:
+                return 0.0
+            tick_dicts = [{
+                "price": float((t["bid"] + t["ask"]) / 2),
+                "volume": float(t.get("volume_real", 1.0) or 1.0),
+            } for t in ticks]
+            return float(compute_vpin(tick_dicts))
+        except Exception:
+            return 0.0
+
+    # ------- Tier B helpers --------------------------------------------------
+    def _open_positions_snapshot() -> list:
+        try:
+            return list(mt5.positions_get() or ())
+        except Exception:
+            return []
+
+    def _open_correlated(symbol: str, open_syms: list[str]) -> int:
+        if not open_syms:
+            return 0
+        # Cheap heuristic: count opens on the same base currency
+        base = symbol[:3].upper()
+        return sum(1 for s in open_syms if s != symbol and s[:3].upper() == base)
+
+    def _intraday_dd_ok() -> bool:
+        try:
+            from engine.mt5_link import account  # noqa: PLC0415
+            snap = account.snapshot()
+            if snap.balance <= 0:
+                return True
+            dd = (snap.balance - snap.equity) / snap.balance
+            return dd < settings.INTRADAY_KILL_PCT
+        except Exception:
+            return True
+
+    # ------- Main loop -------------------------------------------------------
+    while not state.stop_event.is_set():
+        try:
+            if state.paused or not state.mt5_connected:
+                await asyncio.sleep(interval_s)
+                continue
+            if not _intraday_dd_ok():
+                logger.warning("signal_scanner: intraday DD kill active — skipping scan")
+                await asyncio.sleep(interval_s)
+                continue
+            orch = orchestrator_runtime.get_orchestrator()
+            timeframes_needed = sorted({tf for s in orch.strategies for tf in s.timeframes},
+                                        key=lambda t: TF_MINUTES.get(t, 999))
+            open_positions = _open_positions_snapshot()
+            if len(open_positions) >= settings.MAX_CONCURRENT_POSITIONS:
+                logger.debug("signal_scanner: max concurrent positions reached — skipping")
+                await asyncio.sleep(interval_s)
+                continue
+            open_symbols = [p.symbol for p in open_positions]
+
+            contexts: list[StrategyContext] = []
+            h4_bias_cache: dict[str, str] = {}
+            regime_cache: dict[str, str | None] = {}
+            for sym in SYMBOLS_13:
+                tick = await asyncio.to_thread(mt5.symbol_info_tick, sym.name)
+                if tick is None:
+                    continue
+                current_spread = float(tick.ask - tick.bid)
+                spread_ok = await asyncio.to_thread(_spread_ok, sym.name, current_spread)
+                news_ok = await asyncio.to_thread(_news_clear_for, sym.name)
+                vpin = await asyncio.to_thread(_vpin_for, sym.name)
+                h4_bias_cache[sym.name] = h4_bias_cache.get(sym.name) \
+                    or await asyncio.to_thread(_h4_bias_for, sym.name)
+                for tf in timeframes_needed:
+                    bars = await asyncio.to_thread(_pull_bars, sym.name, tf)
+                    if bars is None or len(bars) < 50:
+                        continue
+                    if tf not in regime_cache:
+                        regime_cache[tf] = None
+                    reg = await asyncio.to_thread(_classify_regime, bars)
+                    kz_ok = kill_zone_active(sym.name, _datetime.now(_tz.utc))
+                    contexts.append(StrategyContext(
+                        symbol=sym.name, timeframe=tf, bars=bars,
+                        killzone_ok=kz_ok, news_clear=news_ok,
+                        spread_acceptable=spread_ok, vpin_score=vpin,
+                        regime=reg, h4_bias=h4_bias_cache[sym.name],
+                    ))
+            if not contexts:
+                await asyncio.sleep(interval_s)
+                continue
+            result = await asyncio.to_thread(orch.tick, contexts)
+            for sig in result.signals:
+                try:
+                    BUS.publish("signal_detected", SignalDetected(
+                        signal_id=f"{sig.strategy_name}-{sig.symbol}-{int(time.time())}",
+                        symbol=sig.symbol, timeframe=sig.timeframe,
+                        direction=sig.direction,
+                        confluence=int(sig.confidence // 20),
+                        sources={"strategy": sig.strategy_name},
+                        claude=None,
+                    ))
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("signal broadcast failed: {}", e)
+                if sig.direction == "HOLD":
+                    continue
+
+                # Tier B: per-symbol risk preconditions
+                if _open_correlated(sig.symbol, open_symbols) >= settings.MAX_CORRELATED_POSITIONS:
+                    logger.info("scanner reject {} {}: correlation cap", sig.strategy_name, sig.symbol)
+                    continue
+                if any(p.symbol == sig.symbol for p in open_positions):
+                    logger.debug("scanner reject {}: already open", sig.symbol)
+                    continue
+
+                # Tier C: Claude gate (cost-tracked + budget-guarded)
+                claude_K = 1.0
+                if claude_call is not None:
+                    try:
+                        ctx_payload = {
+                            "symbol": sig.symbol, "timeframe": sig.timeframe,
+                            "direction": sig.direction, "confidence": sig.confidence,
+                            "strategy": sig.strategy_name,
+                            "reasoning_hint": sig.reasoning[:200],
+                            "sl": sig.sl_price, "tp": sig.tp_price,
+                        }
+                        verdict = await asyncio.to_thread(claude_call, ctx_payload)
+                        if verdict.decision == "SKIP" or verdict.decision != sig.direction:
+                            logger.info("claude rejected {} {} {} ({})",
+                                        sig.strategy_name, sig.symbol, sig.direction, verdict.decision)
+                            continue
+                        if verdict.confidence < 50:
+                            continue
+                        claude_K = max(0.5, min(1.5, verdict.risk_adjustment))
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("claude gate failed (proceeding K=1.0): {}", e)
+
+                # Sizing + execution
+                try:
+                    tick = mt5.symbol_info_tick(sig.symbol)
+                    entry = float(tick.ask if sig.direction == "BUY" else tick.bid)
+                    lot_res = await asyncio.to_thread(
+                        size_lot_for, sig.symbol,
+                        entry=entry, sl_price=float(sig.sl_price), K=claude_K,
+                    )
+                    if not lot_res.ok:
+                        logger.info("lot reject {} {} {}: {} (raw={:.4f})",
+                                    sig.strategy_name, sig.symbol, sig.direction,
+                                    lot_res.reason, lot_res.raw_lot)
+                        continue
+                    res = await asyncio.to_thread(send_order, OrderRequest(
+                        symbol=sig.symbol, direction=sig.direction, lot=lot_res.lot,
+                        sl=float(sig.sl_price), tp=float(sig.tp_price),
+                        comment=f"{sig.strategy_name[:20]}",
+                    ))
+                    if res.ok:
+                        logger.info("ORDER OK {} {} {} lot={:.2f} ticket={}",
+                                    sig.strategy_name, sig.symbol, sig.direction,
+                                    lot_res.lot, res.ticket)
+                        BUS.publish("notification", Notification(
+                            event="TRADE_OPENED",
+                            title=f"{sig.symbol} {sig.direction}",
+                            body=(f"{sig.strategy_name} lot={lot_res.lot:.2f} "
+                                  f"SL={sig.sl_price:.5f} TP={sig.tp_price:.5f}"),
+                            sound="trading_open.wav",
+                        ))
+                        open_positions = _open_positions_snapshot()
+                        open_symbols = [p.symbol for p in open_positions]
+                    else:
+                        logger.warning("order_send rejected {} {}: retcode={} {}",
+                                       sig.symbol, sig.direction, res.retcode, res.comment)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("execution path failed for {}: {}", sig.symbol, e)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("signal_scanner loop raised: {}", e)
+        try:
+            await asyncio.wait_for(state.stop_event.wait(), timeout=interval_s)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def _meta_policy_loop(state: EngineState, interval_s: float = 3600.0) -> None:
+    """Tier C: every hour, ask Claude to analyse recent losers + propose
+    parameter overrides. Whitelisted params only; persisted to claude_overrides
+    table. Runtime reads active overrides via active_overrides()."""
+    from engine.ipc.broadcaster import BUS
+    from engine.ipc.messages import Notification
+    from engine.learning.claude_meta_policy import (
+        apply_overrides, collect_recent_losers, propose_overrides,
+    )
+    last_run = 0.0
+    while not state.stop_event.is_set():
+        try:
+            now = time.time()
+            if now - last_run < interval_s:
+                await asyncio.sleep(60)
+                continue
+            losers = await asyncio.to_thread(collect_recent_losers, n=10, lookback_hours=24)
+            if len(losers) < 3:
+                last_run = now
+                await asyncio.sleep(interval_s / 4)
+                continue
+            overrides = await asyncio.to_thread(propose_overrides, losers)
+            if overrides:
+                n_applied = await asyncio.to_thread(apply_overrides, overrides)
+                logger.info("meta_policy: applied {} parameter override(s)", n_applied)
+                BUS.publish("notification", Notification(
+                    event="TRAINING_COMPLETE",
+                    title=f"Claude proposed {n_applied} param tweak(s)",
+                    body="; ".join(f"{o.param}={o.new_value}" for o in overrides[:3]),
+                    sound="signal.wav",
+                ))
+            last_run = now
+        except Exception as e:  # noqa: BLE001
+            logger.warning("meta_policy loop raised: {}", e)
+            last_run = time.time()
+        await asyncio.sleep(60)
+
+
 async def _retrain_dispatcher_loop(state: EngineState, interval_s: float = 60.0) -> None:
     """Poll closed-trade count + drift signal; auto-retrain LightGBM when triggered."""
     from engine.ipc.broadcaster import BUS
@@ -582,6 +888,7 @@ async def run() -> int:
         asyncio.create_task(_shadow_monitor_loop(state)),
         asyncio.create_task(_strategy_status_loop(state)),
         asyncio.create_task(_retrain_dispatcher_loop(state)),
+        asyncio.create_task(_meta_policy_loop(state)),
     ]
     logger.info(
         "shadow_mode={} — order_send will {} real MT5 calls",
@@ -598,6 +905,7 @@ async def run() -> int:
             await asyncio.to_thread(connection.ensure_symbols_visible, [s.name for s in SYMBOLS_13])
             tasks.append(asyncio.create_task(_account_snapshot_loop(state)))
             tasks.append(asyncio.create_task(_tick_publish_loop(state)))
+            tasks.append(asyncio.create_task(_signal_scanner_loop(state)))
             from engine.execution.position_monitor import run as monitor_run
             tasks.append(asyncio.create_task(monitor_run(state.stop_event)))
         except Exception as e:  # noqa: BLE001
