@@ -37,11 +37,12 @@ def _bars_breakout(n: int = 100) -> pd.DataFrame:
 
 def test_all_strategies_listed():
     strategies = all_strategies()
-    assert len(strategies) == 6
+    assert len(strategies) == 7
     names = {s.name for s in strategies}
     assert names == {
         "scalping", "day_trading", "swing",
         "mean_reversion", "breakout", "carry",
+        "pairs_trading",
     }
 
 

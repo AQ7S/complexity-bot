@@ -154,6 +154,16 @@ def send_order(req: OrderRequest) -> OrderResult:
             "SHADOW: {} {} lot={} entry={} sl={} tp={} (id={})",
             req.direction, req.symbol, req.lot, entry, req.sl, req.tp, shadow_id,
         )
+        try:
+            from engine.data.audit_log import append_entry
+            append_entry("shadow_trade_opened", {
+                "shadow_id": shadow_id, "symbol": req.symbol,
+                "direction": req.direction, "lot": req.lot,
+                "entry": entry, "sl": float(req.sl), "tp": float(req.tp),
+                "confluence": int(getattr(req, "confluence", 0) or 0),
+            })
+        except Exception as e:  # noqa: BLE001
+            logger.debug("audit append failed (shadow): {}", e)
         return OrderResult(ok=True, ticket=-shadow_id, retcode=0,
                            comment=f"shadow:{shadow_id}", request=req)
 
@@ -172,6 +182,16 @@ def send_order(req: OrderRequest) -> OrderResult:
 
     ticket = int(res.order or res.deal or 0)
     _log_trade(req, fill_price=float(res.price), ticket=ticket)
+    try:
+        from engine.data.audit_log import append_entry
+        append_entry("trade_opened", {
+            "ticket": ticket, "symbol": req.symbol,
+            "direction": req.direction, "lot": req.lot,
+            "fill_price": float(res.price),
+            "sl": float(req.sl), "tp": float(req.tp),
+        })
+    except Exception as e:  # noqa: BLE001
+        logger.debug("audit append failed (live): {}", e)
     return OrderResult(ok=True, ticket=ticket, retcode=res.retcode, comment=res.comment, request=req)
 
 
@@ -235,6 +255,14 @@ def close_position(ticket: int, *, reason: str = "MANUAL") -> bool:
             _append_to_replay_buffer(pos, exit_price=price, pnl=pnl)
         except Exception as e:  # noqa: BLE001
             logger.debug("replay_buffer append failed: {}", e)
+        try:
+            from engine.data.audit_log import append_entry
+            append_entry("trade_closed", {
+                "ticket": int(pos.ticket), "symbol": pos.symbol,
+                "exit_price": price, "pnl": pnl, "reason": reason,
+            })
+        except Exception as e:  # noqa: BLE001
+            logger.debug("audit append failed (close): {}", e)
     else:
         logger.warning("close_position {} failed: {}", ticket,
                        getattr(res, "comment", mt5.last_error()))

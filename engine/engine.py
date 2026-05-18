@@ -80,51 +80,45 @@ async def _make_command_handler(state: EngineState):
         if type_ == "cmd_manual_retrain":
             assert isinstance(model, CmdManualRetrain)
             try:
-                from engine.models import train_online
                 from engine.ipc.messages import ModelUpdate, Notification
-                from datetime import datetime as _dt
+                from engine.models.online_lgbm_trainer import retrain_now
                 target_model = str(model.model)
-                next_v = train_online.latest_checkpoint_version(target_model) + 1
                 BUS.publish("model_update", ModelUpdate(
-                    model_name=target_model, version=f"retrain_starting_v{next_v}",
+                    model_name="lightgbm", version="retrain_starting",
                     accuracy=None, loss=None,
                 ))
                 BUS.publish("notification", Notification(
                     event="TRAINING_COMPLETE",
-                    title=f"Retrain queued: {target_model}",
-                    body=f"Spawning low-priority worker for v{next_v}…",
+                    title=f"Manual LightGBM retrain requested ({target_model})",
+                    body="Running on a worker thread — should finish in <60s.",
                     sound="signal.wav",
                 ))
                 async def _supervise():
                     try:
-                        loop = asyncio.get_event_loop()
-                        st = train_online.OnlineState()
-                        proc = await loop.run_in_executor(
-                            None,
-                            lambda: train_online.spawn_retrain(
-                                st,
-                                worker=train_online._stub_retrain_worker,
-                                worker_args=(next_v, target_model),
-                                model_name=target_model,
-                            ),
-                        )
-                        while proc.is_alive():
-                            await asyncio.sleep(0.5)
-                        proc.join(timeout=2)
-                        new_path = train_online._newest_checkpoint(target_model)
-                        version = new_path.stem if new_path else f"{target_model}_v{next_v}_{_dt.utcnow():%Y%m%d}"
+                        outcome = await asyncio.to_thread(retrain_now)
+                        if outcome.skipped:
+                            BUS.publish("notification", Notification(
+                                event="ENGINE_ERROR",
+                                title="Retrain skipped",
+                                body=outcome.reason,
+                                sound="error.wav",
+                            ))
+                            logger.warning("manual retrain skipped: {}", outcome.reason)
+                            return
                         BUS.publish("model_update", ModelUpdate(
-                            model_name=target_model, version=version,
-                            accuracy=None, loss=None,
+                            model_name="lightgbm",
+                            version=outcome.checkpoint or "unknown",
+                            accuracy=None, loss=float(outcome.best_val_logloss),
                         ))
                         BUS.publish("notification", Notification(
                             event="TRAINING_COMPLETE",
-                            title=f"Retrain complete: {target_model}",
-                            body=f"New checkpoint: {version}",
+                            title="LightGBM retrain complete",
+                            body=(f"n_train={outcome.n_train} n_val={outcome.n_val} "
+                                  f"logloss={outcome.best_val_logloss:.4f} "
+                                  f"({outcome.elapsed_s:.1f}s)"),
                             sound="complete.wav",
                         ))
-                        logger.info("manual retrain complete model={} version={}",
-                                    target_model, version)
+                        logger.info("manual LGBM retrain complete: {}", outcome.checkpoint)
                     except Exception as e:  # noqa: BLE001
                         logger.exception("manual retrain supervisor failed")
                         BUS.publish("notification", Notification(
@@ -134,7 +128,7 @@ async def _make_command_handler(state: EngineState):
                             sound="error.wav",
                         ))
                 asyncio.create_task(_supervise())
-                return Ack(ref_type=type_, ok=True, error=f"spawned v{next_v}")
+                return Ack(ref_type=type_, ok=True, error="spawned LightGBM retrain")
             except Exception as e:  # noqa: BLE001
                 logger.exception("manual retrain command failed")
                 return Ack(ref_type=type_, ok=False, error=f"{type(e).__name__}: {e}")
@@ -276,6 +270,82 @@ async def _make_command_handler(state: EngineState):
         return Ack(ref_type=type_, ok=False, error="unhandled command")
 
     return handle
+
+
+async def _retrain_dispatcher_loop(state: EngineState, interval_s: float = 60.0) -> None:
+    """Poll closed-trade count + drift signal; auto-retrain LightGBM when triggered."""
+    from engine.ipc.broadcaster import BUS
+    from engine.ipc.messages import ModelUpdate, Notification
+    from engine.learning.retrain_dispatcher import RetrainDispatcher
+    from engine.data.sqlite_journal import open_journal
+
+    dispatcher = RetrainDispatcher()
+    last_seen_trade_id = 0
+    try:
+        with open_journal() as con:
+            row = con.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM trades WHERE pnl IS NOT NULL"
+            ).fetchone()
+            last_seen_trade_id = int(row[0]) if row else 0
+    except Exception as e:  # noqa: BLE001
+        logger.warning("retrain_dispatcher: initial trade-count read failed: {}", e)
+
+    def _on_promotion(outcome, decision):
+        try:
+            BUS.publish("model_update", ModelUpdate(
+                model_name="lightgbm",
+                version=outcome.checkpoint or f"v{int(time.time())}",
+                accuracy=None, loss=float(outcome.best_val_logloss),
+            ))
+            BUS.publish("notification", Notification(
+                event="TRAINING_COMPLETE",
+                title=f"LightGBM retrain: {decision.reason}",
+                body=f"n_train={outcome.n_train} logloss={outcome.best_val_logloss:.4f}",
+                sound="complete.wav",
+            ))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("retrain promotion broadcast failed: {}", e)
+
+    while not state.stop_event.is_set():
+        try:
+            with open_journal() as con:
+                row = con.execute(
+                    "SELECT COALESCE(MAX(id), 0), COUNT(*) FROM trades "
+                    "WHERE pnl IS NOT NULL AND id > ?",
+                    (int(last_seen_trade_id),),
+                ).fetchone()
+                if row:
+                    new_max = int(row[0])
+                    new_count = int(row[1])
+                    if new_count > 0:
+                        for _ in range(new_count):
+                            dispatcher.record_closed_trade()
+                        last_seen_trade_id = max(last_seen_trade_id, new_max)
+            cpu_pct = 0.0
+            try:
+                import psutil  # noqa: PLC0415
+                cpu_pct = float(psutil.cpu_percent(interval=None))
+            except Exception:
+                pass
+            spawned = await asyncio.to_thread(
+                dispatcher.tick,
+                cpu_pct=cpu_pct,
+                promotion_callback=_on_promotion,
+            )
+            if spawned:
+                logger.info("retrain_dispatcher: retrain spawned")
+                BUS.publish("notification", Notification(
+                    event="TRAINING_COMPLETE",
+                    title="LightGBM retrain spawned",
+                    body=f"trades_since_last reset; cooldown {dispatcher.cooldown_s:.0f}s",
+                    sound="signal.wav",
+                ))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("retrain_dispatcher loop raised: {}", e)
+        try:
+            await asyncio.wait_for(state.stop_event.wait(), timeout=interval_s)
+        except asyncio.TimeoutError:
+            pass
 
 
 async def _telemetry_loop(state: EngineState) -> None:
@@ -511,6 +581,7 @@ async def run() -> int:
         asyncio.create_task(_macro_snapshot_loop(state)),
         asyncio.create_task(_shadow_monitor_loop(state)),
         asyncio.create_task(_strategy_status_loop(state)),
+        asyncio.create_task(_retrain_dispatcher_loop(state)),
     ]
     logger.info(
         "shadow_mode={} — order_send will {} real MT5 calls",

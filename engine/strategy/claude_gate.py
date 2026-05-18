@@ -230,15 +230,25 @@ def decide(context: dict, *, model: str | None = None) -> ClaudeResponse:
 
     Persistent failure raises after `CLAUDE_RETRY_MAX` attempts; callers in
     consensus.py wrap the call in try/except and treat exceptions as
-    `claude_unavailable`.
+    `claude_unavailable`. Also enforces the daily USD budget — over the
+    hard cap, we refuse the call entirely.
     """
+    model_id = model or settings.CLAUDE_MODEL
+    try:
+        from engine.notifications import claude_cost
+        if claude_cost.is_over_budget(hard=True):
+            raise RuntimeError("Claude daily HARD budget exceeded — call refused")
+    except RuntimeError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        logger.debug("budget check failed (continuing): {}", e)
     client = _get_client()
     user_payload = json.dumps(context, default=str, separators=(",", ":"))
     last_err: Exception | None = None
     for attempt in range(1, settings.CLAUDE_RETRY_MAX + 1):
         try:
             resp = client.messages.create(
-                model=model or settings.CLAUDE_MODEL,
+                model=model_id,
                 max_tokens=settings.CLAUDE_MAX_TOKENS,
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_payload}],
@@ -248,6 +258,19 @@ def decide(context: dict, *, model: str | None = None) -> ClaudeResponse:
                 getattr(block, "text", "") for block in resp.content
                 if getattr(block, "type", "") == "text"
             )
+            try:
+                from engine.notifications import claude_cost
+                usage = getattr(resp, "usage", None)
+                input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+                output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+                if input_tokens or output_tokens:
+                    claude_cost.record_call(
+                        model=model_id,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                    )
+            except Exception as e:  # noqa: BLE001
+                logger.debug("cost record failed: {}", e)
             payload = _extract_json(text)
             return _validate(payload)
         except (APIError, APIStatusError, ValueError, json.JSONDecodeError) as e:

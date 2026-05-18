@@ -11,6 +11,7 @@ from engine.strategy.strategies.swing import SwingStrategy
 from engine.strategy.strategies.mean_reversion import MeanReversionStrategy
 from engine.strategy.strategies.breakout import BreakoutStrategy
 from engine.strategy.strategies.carry import CarryStrategy
+from engine.strategy.strategies.pairs_trading import PairsTradingStrategy
 
 
 def all_strategies() -> list:
@@ -21,6 +22,7 @@ def all_strategies() -> list:
         MeanReversionStrategy(),
         BreakoutStrategy(),
         CarryStrategy(),
+        PairsTradingStrategy(),
     ]
 
 
@@ -28,4 +30,5 @@ __all__ = [
     "all_strategies",
     "ScalpingStrategy", "DayTradingStrategy", "SwingStrategy",
     "MeanReversionStrategy", "BreakoutStrategy", "CarryStrategy",
+    "PairsTradingStrategy",
 ]
