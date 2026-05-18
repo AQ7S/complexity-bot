@@ -272,6 +272,51 @@ async def _make_command_handler(state: EngineState):
     return handle
 
 
+async def _mt5_reconnect_loop(state: EngineState, interval_s: float = 30.0) -> None:
+    """Keep retrying MT5 connection until success, then re-attempt if it drops."""
+    from engine.mt5_link import connection  # noqa: PLC0415
+    from engine.config.symbols import SYMBOLS_13  # noqa: PLC0415
+    try:
+        import MetaTrader5 as mt5  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        logger.warning("mt5_reconnect: MetaTrader5 module unavailable — loop disabled")
+        return
+    consecutive_failures = 0
+    while not state.stop_event.is_set():
+        try:
+            # Verify the existing connection is still alive
+            if state.mt5_connected:
+                acct = await asyncio.to_thread(mt5.account_info)
+                if acct is None:
+                    logger.warning("mt5_reconnect: connection dropped (account_info returned None)")
+                    state.mt5_connected = False
+            if not state.mt5_connected:
+                logger.info("mt5_reconnect: attempting connection (failure #{})", consecutive_failures + 1)
+                try:
+                    await asyncio.to_thread(
+                        connection.initialize_with_retry, attempts=1, delay_s=1.0,
+                    )
+                    state.mt5_connected = True
+                    consecutive_failures = 0
+                    await asyncio.to_thread(
+                        connection.ensure_symbols_visible, [s.name for s in SYMBOLS_13],
+                    )
+                    logger.info("MT5 CONNECTED — scanner will resume on next cycle")
+                except Exception as e:  # noqa: BLE001
+                    consecutive_failures += 1
+                    if consecutive_failures % 4 == 1:  # log every ~2min
+                        logger.warning(
+                            "mt5_reconnect: still failing ({}x): {}",
+                            consecutive_failures, e,
+                        )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("mt5_reconnect loop raised: {}", e)
+        try:
+            await asyncio.wait_for(state.stop_event.wait(), timeout=interval_s)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def _signal_scanner_loop(state: EngineState, interval_s: float = 30.0) -> None:
     """Elite live signal generation — Tier A + B + C gates wired in.
 
@@ -401,15 +446,27 @@ async def _signal_scanner_loop(state: EngineState, interval_s: float = 30.0) -> 
             return True
 
     # ------- Main loop -------------------------------------------------------
+    iter_count = 0
     while not state.stop_event.is_set():
         try:
-            if state.paused or not state.mt5_connected:
+            iter_count += 1
+            if state.paused:
+                if iter_count % 10 == 1:
+                    logger.info("signal_scanner: engine PAUSED — sleeping")
+                await asyncio.sleep(interval_s)
+                continue
+            if not state.mt5_connected:
+                if iter_count % 10 == 1:
+                    logger.info("signal_scanner: waiting for MT5 connection (still STARTING)")
                 await asyncio.sleep(interval_s)
                 continue
             if not _intraday_dd_ok():
                 logger.warning("signal_scanner: intraday DD kill active — skipping scan")
                 await asyncio.sleep(interval_s)
                 continue
+            if iter_count % 4 == 1:  # every ~2 minutes
+                logger.info("signal_scanner heartbeat — iter={} scanning {} symbols",
+                            iter_count, 13)
             orch = orchestrator_runtime.get_orchestrator()
             timeframes_needed = sorted({tf for s in orch.strategies for tf in s.timeframes},
                                         key=lambda t: TF_MINUTES.get(t, 999))
@@ -451,6 +508,12 @@ async def _signal_scanner_loop(state: EngineState, interval_s: float = 30.0) -> 
                 await asyncio.sleep(interval_s)
                 continue
             result = await asyncio.to_thread(orch.tick, contexts)
+            if iter_count % 4 == 1:
+                logger.info(
+                    "signal_scanner: {} contexts → {} signals (paused={} shadow={})",
+                    len(contexts), len(result.signals),
+                    len(result.skipped_paused), len(result.skipped_shadow),
+                )
             for sig in result.signals:
                 try:
                     BUS.publish("signal_detected", SignalDetected(
@@ -857,7 +920,29 @@ async def _tick_publish_loop(state: EngineState, interval_s: float = 0.5) -> Non
             pass
 
 
+def _setup_file_logger() -> None:
+    """Attach a rotating file sink so logs persist to disk for diagnostics."""
+    try:
+        from pathlib import Path as _P  # noqa: PLC0415
+        log_dir = _P(settings.LOG_DIR)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        logger.add(
+            log_dir / "engine.log",
+            rotation="20 MB",
+            retention="14 days",
+            level=settings.LOG_LEVEL,
+            backtrace=True,
+            diagnose=False,
+            enqueue=True,
+            encoding="utf-8",
+        )
+        logger.info("file logger attached: {}/engine.log", log_dir)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("could not attach file logger: {}", e)
+
+
 async def run() -> int:
+    _setup_file_logger()
     state = EngineState()
     handler = await _make_command_handler(state)
 
@@ -903,14 +988,17 @@ async def run() -> int:
             state.mt5_connected = True
             from engine.config.symbols import SYMBOLS_13
             await asyncio.to_thread(connection.ensure_symbols_visible, [s.name for s in SYMBOLS_13])
-            tasks.append(asyncio.create_task(_account_snapshot_loop(state)))
-            tasks.append(asyncio.create_task(_tick_publish_loop(state)))
-            tasks.append(asyncio.create_task(_signal_scanner_loop(state)))
-            from engine.execution.position_monitor import run as monitor_run
-            tasks.append(asyncio.create_task(monitor_run(state.stop_event)))
+            logger.info("MT5 connected on startup")
         except Exception as e:  # noqa: BLE001
-            logger.error("MT5 boot failed, running IPC-only: {}", e)
+            logger.error("MT5 boot failed on startup (background reconnect will retry): {}", e)
             state.mt5_connected = False
+        # Always register the MT5-dependent loops — they no-op until reconnect.
+        tasks.append(asyncio.create_task(_account_snapshot_loop(state)))
+        tasks.append(asyncio.create_task(_tick_publish_loop(state)))
+        tasks.append(asyncio.create_task(_signal_scanner_loop(state)))
+        tasks.append(asyncio.create_task(_mt5_reconnect_loop(state)))
+        from engine.execution.position_monitor import run as monitor_run
+        tasks.append(asyncio.create_task(monitor_run(state.stop_event)))
     else:
         logger.warning("MT5 creds missing — running IPC-only (UI dev mode)")
 
