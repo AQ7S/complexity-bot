@@ -464,9 +464,8 @@ async def _signal_scanner_loop(state: EngineState, interval_s: float = 30.0) -> 
                 logger.warning("signal_scanner: intraday DD kill active — skipping scan")
                 await asyncio.sleep(interval_s)
                 continue
-            if iter_count % 4 == 1:  # every ~2 minutes
-                logger.info("signal_scanner heartbeat — iter={} scanning {} symbols",
-                            iter_count, 13)
+            logger.info("signal_scanner heartbeat — iter={} (scanning {} symbols)",
+                        iter_count, 13)
             orch = orchestrator_runtime.get_orchestrator()
             timeframes_needed = sorted({tf for s in orch.strategies for tf in s.timeframes},
                                         key=lambda t: TF_MINUTES.get(t, 999))
@@ -508,12 +507,11 @@ async def _signal_scanner_loop(state: EngineState, interval_s: float = 30.0) -> 
                 await asyncio.sleep(interval_s)
                 continue
             result = await asyncio.to_thread(orch.tick, contexts)
-            if iter_count % 4 == 1:
-                logger.info(
-                    "signal_scanner: {} contexts → {} signals (paused={} shadow={})",
-                    len(contexts), len(result.signals),
-                    len(result.skipped_paused), len(result.skipped_shadow),
-                )
+            logger.info(
+                "signal_scanner: {} contexts -> {} signals (paused={} shadow={})",
+                len(contexts), len(result.signals),
+                len(result.skipped_paused), len(result.skipped_shadow),
+            )
             for sig in result.signals:
                 try:
                     BUS.publish("signal_detected", SignalDetected(
@@ -921,22 +919,37 @@ async def _tick_publish_loop(state: EngineState, interval_s: float = 0.5) -> Non
 
 
 def _setup_file_logger() -> None:
-    """Attach a rotating file sink so logs persist to disk for diagnostics."""
+    """Attach a rotating file sink so logs persist to disk for diagnostics.
+
+    Force absolute path to user-data dir (overrides relative LOG_DIR env that
+    devs use). Synchronous writes (enqueue=False) so output is visible
+    immediately even in PyInstaller bundles where multiprocessing.Queue is
+    fragile."""
     try:
         from pathlib import Path as _P  # noqa: PLC0415
-        log_dir = _P(settings.LOG_DIR)
+        import os as _os  # noqa: PLC0415
+        # Force absolute user-data path regardless of what .env says.
+        appdata = _os.environ.get("APPDATA") or str(_P.home() / "AppData" / "Roaming")
+        log_dir = _P(appdata) / "Complexity Engine" / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         logger.add(
-            log_dir / "engine.log",
+            str(log_dir / "engine.log"),
             rotation="20 MB",
             retention="14 days",
             level=settings.LOG_LEVEL,
             backtrace=True,
             diagnose=False,
-            enqueue=True,
+            enqueue=False,
             encoding="utf-8",
         )
-        logger.info("file logger attached: {}/engine.log", log_dir)
+        logger.info("=" * 70)
+        logger.info("Complexity Engine starting — log: {}", log_dir / "engine.log")
+        logger.info("  SHADOW_MODE      = {}", settings.shadow_mode_active())
+        logger.info("  RISK_PCT_PER_TRADE = {}", settings.RISK_PCT_PER_TRADE)
+        logger.info("  INTRADAY_KILL_PCT  = {}", settings.INTRADAY_KILL_PCT)
+        logger.info("  MT5_LOGIN          = {}", settings.MT5_LOGIN)
+        logger.info("  MT5_SERVER         = {}", settings.MT5_SERVER)
+        logger.info("=" * 70)
     except Exception as e:  # noqa: BLE001
         logger.warning("could not attach file logger: {}", e)
 
