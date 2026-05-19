@@ -326,17 +326,23 @@ async def _signal_scanner_loop(state: EngineState, interval_s: float = 30.0) -> 
       * run orchestrator.tick → strategy signals
       * for each signal: risk preconditions → Claude gate → lot size → fire
     """
-    import numpy as np  # noqa: PLC0415
-    import pandas as pd  # noqa: PLC0415
-    from datetime import datetime as _datetime, timezone as _tz  # noqa: PLC0415
-    from engine.config.symbols import SYMBOLS_13
-    from engine.execution.order_router import OrderRequest, send_order, size_lot_for
-    from engine.ipc.broadcaster import BUS
-    from engine.ipc.messages import Notification, SignalDetected
-    from engine.strategy import orchestrator_runtime
-    from engine.strategy.base import StrategyContext
-    from engine.strategy.claude_gate import gate_factory
-    from engine.utils.time_utils import kill_zone_active
+    logger.info("signal_scanner: TASK STARTING")
+    try:
+        import numpy as np  # noqa: PLC0415
+        import pandas as pd  # noqa: PLC0415
+        from datetime import datetime as _datetime, timezone as _tz  # noqa: PLC0415
+        from engine.config.symbols import SYMBOLS_13
+        from engine.execution.order_router import OrderRequest, send_order, size_lot_for
+        from engine.ipc.broadcaster import BUS
+        from engine.ipc.messages import Notification, SignalDetected
+        from engine.strategy import orchestrator_runtime
+        from engine.strategy.base import StrategyContext
+        from engine.strategy.claude_gate import gate_factory
+        from engine.utils.time_utils import kill_zone_active
+    except Exception as e:  # noqa: BLE001
+        logger.error("signal_scanner: IMPORT FAILURE — task aborting: {!r}", e)
+        logger.exception("signal_scanner import traceback")
+        return
 
     try:
         import MetaTrader5 as mt5  # noqa: PLC0415

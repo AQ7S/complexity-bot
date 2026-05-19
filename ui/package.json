@@ -1,6 +1,6 @@
 {
   "name": "complexity-engine-ui",
-  "version": "1.0.19",
+  "version": "1.0.20",
   "private": true,
   "main": "dist-electron/main.js",
   "scripts": {
